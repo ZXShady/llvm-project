@@ -1,5 +1,7 @@
+
 namespace Math {
     struct Vec {
+        constexpr Vec(int x,int y) : x(x),y(y){}
         int x, y;
         constexpr bool operator==(const Vec& other) const {
             return x == other.x && y == other.y;
@@ -64,14 +66,10 @@ namespace Ptr {
     }
 }
 
-// ========================
-// Compile-time test suite
-// ========================
-
 constexpr bool test_obj_call() {
     Math::Vec v{4, 6};
     auto expected = Math::normalize(v);
-    auto actual = v.Math::normalize(); // x.Math::f() → Math::f(x)
+    auto actual = v.Math::normalize();
     return actual == expected;
 }
 
@@ -94,7 +92,7 @@ constexpr bool test_ptr_with_arg() {
 
 constexpr bool test_chaining_obj() {
     Chain::Num n{2};
-    auto result = n.Chain::double_up().Chain::increment(); // (2 * 2) + 1 = 5
+    auto result = n.Chain::double_up().Chain::increment();
     return result == Chain::Num{5};
 }
 
@@ -131,12 +129,12 @@ namespace stdx {
 
 
     // Functor (think ranges)
-    struct identity_ 
+    struct twice_ 
     {
         constexpr auto operator()(const auto& x) const {
-                return x;
+                return x*2;
         }
-    } constexpr static identity;
+    } constexpr static twice;
 }
 
 constexpr bool test_optional_like() {
@@ -145,8 +143,51 @@ constexpr bool test_optional_like() {
 }
 
 // Due to parsing ambiguity with floating points put it in ()
-constexpr bool test_identity() {
-    return (0).stdx::identity() == 0;
+constexpr bool test_functor() {
+    return (1).stdx::twice() == 2;
+}
+
+
+struct ConstructorInt {
+    ConstructorInt(int x) : x(x) {}
+    int x; 
+};
+
+template<typename...>
+struct Tuple {
+};
+
+template<int I, typename T>
+constexpr int get(Tuple<T> t,void*) {
+    return 0;
+}
+
+template <typename T>
+constexpr bool test_dependant(T u){
+    return u.::get<0>(nullptr) == 0;
+}
+
+namespace stdx {
+    using ::get;
+}
+template <typename T>
+constexpr bool test_dependant2(T u){
+    // x.stdx::get<0>(nullptr); does not compile 
+    // TODO: add checking whether it is a namespace name and choose it BUT make a warning about hiding the basse class
+    // and adding some sort of keyword like u.typename stdx::get<0>(); that says it is a base class
+    return u.::stdx::get<0>(nullptr) == 0;
+}
+
+enum class Enum { a,b,c};
+constexpr const char* to_string(Enum e)
+{
+    switch(e)
+    {
+        case Enum::a: return "a";
+        case Enum::b: return "b";
+        case Enum::c: return "c";
+    }
+    return nullptr;
 }
 
 static_assert(test_obj_call(),           "obj.Namespace::func() failed");
@@ -158,6 +199,10 @@ static_assert(test_member_vs_free(),     "Member vs free function resolution fai
 static_assert(test_ptr_obj_free(),       "Pointer to object free function call failed");
 static_assert(test_ptr_obj_free_global_namespace(),       "Pointer to object global free function call failed");
 static_assert(test_optional_like(),       "Optional like");
-static_assert(test_identity(),       "Identity");
+static_assert(test_functor(),       "Functor");
+static_assert(test_dependant(Tuple<int>{}),       "Dependant");
+static_assert(test_dependant2(Tuple<int>{}),       "Dependant 2");
+static_assert(*Enum::a.::to_string() == 'a',       "Enums");
+
 
 int main(){}

@@ -25,8 +25,10 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/LocInfoType.h"
+#include "clang/AST/TemplateBase.h"
 #include "clang/Basic/DiagnosticParse.h"
 #include "clang/Basic/PrettyStackTrace.h"
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/TokenKinds.h"
 #include "clang/Lex/LiteralSupport.h"
 #include "clang/Parse/Parser.h"
@@ -46,6 +48,8 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Error.h"
+#include <cstdint>
 #include <optional>
 using namespace clang;
 
@@ -74,53 +78,14 @@ static void noteOperatorArrows(Sema &S,
   }
 }
 
-static ExprResult ActOnNamespaceAccessViaObject(
-    Sema &SemaRef, tok::TokenKind ArrowOperator, Scope *S, Expr *BaseExpr,
-    SourceLocation OpLoc, CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
-    UnqualifiedId &Name, llvm::ArrayRef<Expr *> Args) {
-  DeclarationName DeclName = SemaRef.GetNameFromUnqualifiedId(Name).getName();
-  if (!DeclName) {
-    SemaRef.Diag(Name.getBeginLoc(), diag::err_expected_unqualified_id);
-    return ExprError();
-  }
-
-  DeclarationNameInfo NameInfo(DeclName, Name.getSourceRange().getBegin());
-
-  DeclContext *DC = SemaRef.computeDeclContext(SS);
-  LookupResult R(SemaRef, NameInfo, Sema::LookupNameKind::LookupOrdinaryName);
-  SemaRef.LookupQualifiedName(R, DC);
-
-  if (R.empty()) {
-    SemaRef.Diag(Name.getSourceRange().getBegin(), diag::err_undeclared_var_use)
-        << DeclName;
-    return ExprError();
-  }
-
-
-  // llvm::errs() << FD->getQualifiedNameAsString() << '\n';
-  // llvm::errs() << "Type: " << FD->getDeclKindName() << '\n';
-
-  ExprResult Callee = SemaRef.BuildDeclarationNameExpr(SS, R, /*ADL=*/false);
-  if (Callee.isInvalid())
-    return ExprError();
-
-  if (!BaseExpr) {
-    SemaRef.Diag(OpLoc, diag::err_expected_lparen_after)
-        << " From ZXShady UFCS";
-    return ExprError();
-  }
-
-  assert(BaseExpr != nullptr);
-  llvm::SmallVector<Expr *, 8> CallArgs;
-
-  if (ArrowOperator == tok::TokenKind::arrow &&
-      !BaseExpr->getType()->isRecordType()) {
+static ExprResult handleArrowOperator(Sema &SemaRef, Scope *S, Expr *BaseExpr,
+                                      SourceLocation OpLoc) {
+  if (!BaseExpr->getType()->isRecordType()) {
     // Build an explicit UnaryOperator node to represent '*a'
     QualType PointeeTy = BaseExpr->getType()->getPointeeType();
     BaseExpr = SemaRef.CreateBuiltinUnaryOp(OpLoc, UO_Deref, BaseExpr).get();
     BaseExpr->setType(PointeeTy);
-  } else if (ArrowOperator == tok::TokenKind::arrow &&
-             BaseExpr->getType()->isRecordType()) {
+  } else {
     ExprResult Result{};
     bool NoArrowOperatorFound = false;
     QualType StartingType = BaseExpr->getType();
@@ -181,9 +146,71 @@ static ExprResult ActOnNamespaceAccessViaObject(
       FirstIteration = false;
     }
   }
+  return BaseExpr;
+}
+
+static ExprResult ActOnNamespaceAccessViaObject(
+    Sema &SemaRef, tok::TokenKind ArrowOperator, Scope *S, Expr *BaseExpr,
+    SourceLocation OpLoc, CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
+    UnqualifiedId &Name, llvm::ArrayRef<Expr *> Args) {
+
+  // Extract the declaration name we want to call (like "get")
+  DeclarationName DeclName = SemaRef.GetNameFromUnqualifiedId(Name).getName();
+  if (!DeclName) {
+    SemaRef.Diag(Name.getBeginLoc(), diag::err_expected_unqualified_id);
+    return ExprError();
+  }
+  DeclarationNameInfo NameInfo(DeclName, Name.getSourceRange().getBegin());
+  DeclContext *DC = SemaRef.computeDeclContext(SS);
+  LookupResult R(SemaRef, NameInfo, Sema::LookupNameKind::LookupOrdinaryName);
+  SemaRef.LookupQualifiedName(R, DC);
+  if (R.empty()) {
+    SemaRef.Diag(Name.getSourceRange().getBegin(), diag::err_undeclared_var_use)
+        << DeclName;
+    return ExprError();
+  }
+
+  if (!BaseExpr) {
+    SemaRef.Diag(OpLoc, diag::err_expected_lparen_after)
+        << " From ZXShady UFCS";
+    return ExprError();
+  }
+
+  // Handle operator-> chaining on BaseExpr first
+  if (ArrowOperator == tok::arrow) {
+    ExprResult NewBase = handleArrowOperator(SemaRef, S, BaseExpr, OpLoc);
+    if (NewBase.isInvalid())
+      return ExprError();
+    BaseExpr = NewBase.get();
+  }
+
+  // Build the call argumentswith the base as the first arguement
+  SmallVector<Expr *, 8> CallArgs;
   CallArgs.push_back(BaseExpr);
   CallArgs.append(Args.begin(), Args.end());
-  return SemaRef.ActOnCallExpr(S, Callee.get(), OpLoc, CallArgs, OpLoc);
+
+  // Wish it was const.
+  ExprResult CalleeExpr;
+
+  // If it is a template then it is a little bit special
+  if (Name.getKind() == UnqualifiedIdKind::IK_TemplateId) {
+    // Grab the template id (which I think is the name?)
+    // Then get the template arguements to lookup correctly.
+    TemplateIdAnnotation *TIA = Name.TemplateId;
+    TemplateArgumentListInfo TemplateArgsInfo;
+    ASTTemplateArgsPtr RawArgs(TIA->getTemplateArgs(), TIA->NumArgs);
+    TemplateArgsInfo.setLAngleLoc(TIA->LAngleLoc);
+    TemplateArgsInfo.setRAngleLoc(TIA->RAngleLoc);
+    SemaRef.translateTemplateArguments(RawArgs, TemplateArgsInfo);
+    CalleeExpr = SemaRef.BuildTemplateIdExpr(SS, /*TemplateKWLoc=*/ SourceLocation(), R, /*ADL=*/ false,
+                                             &TemplateArgsInfo);
+  } else {
+    CalleeExpr = SemaRef.BuildDeclarationNameExpr(SS, R, /*ADL=*/false);
+  }
+
+  if (CalleeExpr.isInvalid())
+    return ExprError();
+  return SemaRef.ActOnCallExpr(S, CalleeExpr.get(), OpLoc, CallArgs, OpLoc);
 }
 
 ExprResult
@@ -2150,10 +2177,8 @@ ExprResult Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
           // If the next token is ) then it means it an empty list (this is
           // needed because ParseExpressionList errors on empty args)
           if (Tok.is(tok::r_paren)) {
-
             ConsumeToken(); // consume the )
           } else {
-
             // Yea apparantly it returns true on failure :/
             if (ParseExpressionList(Args))
               return ExprError();
