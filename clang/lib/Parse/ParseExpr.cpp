@@ -202,8 +202,9 @@ static ExprResult ActOnNamespaceAccessViaObject(
     TemplateArgsInfo.setLAngleLoc(TIA->LAngleLoc);
     TemplateArgsInfo.setRAngleLoc(TIA->RAngleLoc);
     SemaRef.translateTemplateArguments(RawArgs, TemplateArgsInfo);
-    CalleeExpr = SemaRef.BuildTemplateIdExpr(SS, /*TemplateKWLoc=*/ SourceLocation(), R, /*ADL=*/ false,
-                                             &TemplateArgsInfo);
+    CalleeExpr =
+        SemaRef.BuildTemplateIdExpr(SS, /*TemplateKWLoc=*/SourceLocation(), R,
+                                    /*ADL=*/false, &TemplateArgsInfo);
   } else {
     CalleeExpr = SemaRef.BuildDeclarationNameExpr(SS, R, /*ADL=*/false);
   }
@@ -2176,14 +2177,10 @@ ExprResult Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
           SmallVector<Expr *, 8> Args;
           // If the next token is ) then it means it an empty list (this is
           // needed because ParseExpressionList errors on empty args)
-          if (Tok.is(tok::r_paren)) {
-            ConsumeToken(); // consume the )
-          } else {
-            // Yea apparantly it returns true on failure :/
-            if (ParseExpressionList(Args))
-              return ExprError();
-            ConsumeToken(); // consume the )
-          }
+          if (!Tok.is(tok::r_paren) && ParseExpressionList(Args))
+            return ExprError();
+
+          T.consumeClose(); // consume the )
 
           //  now lets build the call expression using the LHS and Args
           LHS = ActOnNamespaceAccessViaObject(Actions, OpKind, getCurScope(),

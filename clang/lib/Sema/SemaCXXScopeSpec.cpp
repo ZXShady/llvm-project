@@ -512,7 +512,7 @@ bool Sema::BuildCXXNestedNameSpecifier(Scope *S, NestedNameSpecInfo &IdInfo,
     if (this->LookupName(NamespaceResult, S)) {
       for (NamedDecl *D : NamespaceResult) {
         if (auto *NS = dyn_cast<NamespaceDecl>(D)) {
-          auto NNS = NestedNameSpecifier(Context, NS, {});
+          auto NNS = NestedNameSpecifier(Context, NS,std::nullopt);
           SS.clear();
           SS.MakeTrivial(Context, NNS, IdInfo.CCLoc);
           return false;
