@@ -42,7 +42,7 @@ class Scope {
 public:
   /// ScopeFlags - These are bitfields that are or'd together when creating a
   /// scope, which defines the sorts of things the scope contains.
-  enum ScopeFlags {
+  enum ScopeFlags : uint32_t {
     // A bitfield value representing no scopes.
     NoScope = 0,
 

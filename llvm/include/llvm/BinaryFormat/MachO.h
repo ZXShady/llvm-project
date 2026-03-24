@@ -54,7 +54,7 @@ enum HeaderFileType {
   MH_FILESET = 0xCu,
 };
 
-enum {
+enum : uint32_t {
   // Constant bits for the "flags" field in llvm::MachO::mach_header and
   // llvm::MachO::mach_header_64
   MH_NOUNDEFS = 0x00000001u,
@@ -2277,7 +2277,7 @@ inline void swapStruct(dyld_chained_starts_in_segment &C) {
 
 /* code signing attributes of a process */
 
-enum CodeSignAttrs {
+enum CodeSignAttrs : uint32_t{
   CS_VALID = 0x00000001,          /* dynamically valid */
   CS_ADHOC = 0x00000002,          /* ad hoc signed */
   CS_GET_TASK_ALLOW = 0x00000004, /* has get-task-allow entitlement */
@@ -2351,7 +2351,7 @@ enum CodeSignExecSegFlags {
 
 /* Magic numbers used by Code Signing */
 
-enum CodeSignMagic {
+enum CodeSignMagic : uint32_t {
   CSMAGIC_REQUIREMENT = 0xfade0c00, /* single Requirement blob */
   CSMAGIC_REQUIREMENTS =
       0xfade0c01, /* Requirements vector (internal requirements) */

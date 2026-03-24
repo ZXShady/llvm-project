@@ -1801,7 +1801,7 @@ enum {
 };
 
 // GNU note types.
-enum {
+enum : uint32_t {
   NT_GNU_ABI_TAG = 1,
   NT_GNU_HWCAP = 2,
   NT_GNU_BUILD_ID = 3,
