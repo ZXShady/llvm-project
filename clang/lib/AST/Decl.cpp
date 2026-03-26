@@ -3864,7 +3864,7 @@ unsigned FunctionDecl::getMinRequiredArguments() const {
 }
 
 bool FunctionDecl::hasCXXExplicitFunctionObjectParameter() const {
-  return getNumParams() != 0 && getParamDecl(0)->isExplicitObjectParameter();
+  return isa<CXXMethodDecl>(this) && getNumParams() != 0 && getParamDecl(0)->isExplicitObjectParameter();
 }
 
 unsigned FunctionDecl::getNumNonObjectParams() const {

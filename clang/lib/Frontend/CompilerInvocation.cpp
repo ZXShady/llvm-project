@@ -4318,7 +4318,13 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
       }
     }
   }
-
+  if (const Arg *A = Args.getLastArg(OPT_fufcs_EQ)) {
+    if (!Opts.CPlusPlus && Opts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled) {
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << A->getSpelling() << "C (UFCS requires C++)";
+      Opts.setUFCSMode(LangOptions::UFCSModeKind::Disabled);
+    }
+  }
   // Set the flag to prevent the implementation from emitting device exception
   // handling code for those requiring so.
   if ((Opts.OpenMPIsTargetDevice && T.isGPU()) || Opts.OpenCLCPlusPlus) {

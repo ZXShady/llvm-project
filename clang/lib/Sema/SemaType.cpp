@@ -4906,6 +4906,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
                         : nullptr;
 
       bool IsFunctionDecl = D.getInnermostNonParenChunk() == &DeclType;
+      const bool IsUFCS = S.getLangOpts().getUFCSMode() == LangOptions::UFCSModeKind::Extensions;
       if (First && First->isExplicitObjectParameter() &&
           C != DeclaratorContext::LambdaExpr &&
 
@@ -4918,21 +4919,25 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
 
           // Allow out-of-line definitions of member functions.
           !IsClassType(D.getCXXScopeSpec())) {
-        if (IsFunctionDecl)
-          S.Diag(First->getBeginLoc(),
-                 diag::err_explicit_object_parameter_nonmember)
-              << /*non-member*/ 2 << /*function*/ 0 << First->getSourceRange();
-        else
-          S.Diag(First->getBeginLoc(),
-                 diag::err_explicit_object_parameter_invalid)
-              << First->getSourceRange();
 
-        // Do let non-member function have explicit parameters
-        // to not break assumptions elsewhere in the code.
-        First->setExplicitObjectParameterLoc(SourceLocation());
-        D.setInvalidType();
-        AreDeclaratorChunksValid = false;
-      }
+        if (!IsUFCS) {
+          if (IsFunctionDecl)
+            S.Diag(First->getBeginLoc(),
+                   diag::err_explicit_object_parameter_nonmember)
+                << /*non-member*/ 2 << /*function*/ 0
+                << First->getSourceRange();
+          else
+            S.Diag(First->getBeginLoc(),
+                   diag::err_explicit_object_parameter_invalid)
+                << First->getSourceRange();
+
+          // Do let non-member function have explicit parameters
+          // to not break assumptions elsewhere in the code.
+          First->setExplicitObjectParameterLoc(SourceLocation());
+          D.setInvalidType();
+          AreDeclaratorChunksValid = false;
+        }
+    }
 
       // Check for auto functions and trailing return type and adjust the
       // return type accordingly.

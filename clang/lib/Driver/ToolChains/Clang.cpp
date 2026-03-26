@@ -5083,6 +5083,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_fclangir))
     CmdArgs.push_back("-fclangir");
 
+  if (Arg *A = Args.getLastArg(options::OPT_fufcs_EQ))
+    A->render(Args, CmdArgs);
+  
   if (IsOpenMPDevice) {
     // We have to pass the triple of the host if compiling for an OpenMP device.
     std::string NormalizedTriple =

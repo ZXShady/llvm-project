@@ -527,6 +527,8 @@ LANGOPT(EnableLifetimeSafetyTUAnalysis, 1, 0, NotCompatible, "Lifetime safety at
 LANGOPT(PreserveVec3Type, 1, 0, NotCompatible, "Preserve 3-component vector type")
 LANGOPT(Reflection      , 1, 0, NotCompatible, "C++26 Reflection")
 
+ENUM_LANGOPT(UFCSMode, UFCSModeKind, 2, UFCSModeKind::Disabled, NotCompatible,
+             "Control C++'s UFCS Behavior and syntax")
 #undef LANGOPT
 #undef ENUM_LANGOPT
 #undef VALUE_LANGOPT

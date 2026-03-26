@@ -1582,6 +1582,17 @@ Sema::AccessResult Sema::CheckUnresolvedLookupAccess(UnresolvedLookupExpr *E,
 
 Sema::AccessResult Sema::CheckUnresolvedMemberAccess(UnresolvedMemberExpr *E,
                                                      DeclAccessPair Found) {
+  auto *ND = Found.getDecl();
+  if (auto *SD = dyn_cast<UsingShadowDecl>(ND))
+    ND = SD->getUnderlyingDecl();
+
+  if (!isa<CXXMethodDecl>(ND) &&
+      isa<FunctionDecl>(ND))
+    return AR_accessible;
+  if (isa<FunctionTemplateDecl>(ND) &&
+      !isa<CXXRecordDecl>(ND->getDeclContext()))
+    return AR_accessible;
+
   if (!getLangOpts().AccessControl ||
       Found.getAccess() == AS_public)
     return AR_accessible;
@@ -1910,13 +1921,15 @@ void Sema::CheckLookupAccess(const LookupResult &R) {
   assert(R.getNamingClass() && "performing access check without naming class");
 
   for (LookupResult::iterator I = R.begin(), E = R.end(); I != E; ++I) {
-    if (I.getAccess() != AS_public) {
-      AccessTarget Entity(Context, AccessedEntity::Member,
-                          R.getNamingClass(), I.getPair(),
-                          R.getBaseObjectType());
-      Entity.setDiag(diag::err_access);
-      CheckAccess(*this, R.getNameLoc(), Entity);
-    }
+    auto *ND = I.getDecl();
+    if ((!isa<CXXMethodDecl>(ND) && isa<FunctionDecl>(ND)) || I.getAccess() == AS_public)
+      continue;
+
+    AccessTarget Entity(Context, AccessedEntity::Member, R.getNamingClass(),
+                        I.getPair(), R.getBaseObjectType());
+
+    Entity.setDiag(diag::err_access);
+    CheckAccess(*this, R.getNameLoc(), Entity);
   }
 }
 
@@ -1930,6 +1943,8 @@ bool Sema::IsSimplyAccessible(NamedDecl *Target, CXXRecordDecl *NamingClass,
     // accessed, which is described by the access in DeclAccessPair.
     // `IsAccessible` will examine the actual access of Target (i.e.
     // Decl->getAccess()) when calculating the access.
+    if ((!isa<CXXMethodDecl>(Target) && isa<FunctionDecl>(Target)))
+      return true;
     AccessTarget Entity(Context, AccessedEntity::Member, NamingClass,
                         DeclAccessPair::make(Target, AS_none), BaseType);
     EffectiveContext EC(CurContext);

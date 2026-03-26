@@ -1601,9 +1601,10 @@ static bool hasOnlyNonStaticMemberFunctions(UnresolvedSetIterator begin,
 
     // Unresolved member expressions should only contain methods and
     // method templates.
-    if (cast<CXXMethodDecl>(decl->getUnderlyingDecl()->getAsFunction())
-            ->isStatic())
-      return false;
+    if (const auto *M = dyn_cast<CXXMethodDecl>(
+            decl->getUnderlyingDecl()->getAsFunction()))
+      if (M->isStatic())
+        return false;
   } while (++begin != end);
 
   return true;

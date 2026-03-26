@@ -10042,3 +10042,13 @@ def wasm_opt : Flag<["--"], "wasm-opt">,
   Group<m_Group>,
   HelpText<"Enable the wasm-opt optimizer (default)">,
   MarshallingInfoNegativeFlag<LangOpts<"NoWasmOpt">>;
+
+
+def fufcs_EQ : Joined<["-"], "fufcs=">, Group<f_Group>,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Control UFCS behavior: 'extensions' enables C#-style explicit 'this' parameters; "
+           "'herb' enables calling any free function with member syntax">,
+  Values<"disabled,extensions,herb">,
+  NormalizedValuesScope<"LangOptions">, 
+  NormalizedValues<["UFCSModeKind::Disabled", "UFCSModeKind::Extensions", "UFCSModeKind::Herb"]>,
+  MarshallingInfoEnum<LangOpts<"UFCSMode">, "UFCSModeKind::Disabled">;

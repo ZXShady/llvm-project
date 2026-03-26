@@ -22,6 +22,7 @@
 #include "clang/AST/Type.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticOptions.h"
+#include "clang/Basic/DiagnosticSema.h"
 #include "clang/Basic/OperatorKinds.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/SourceManager.h"
@@ -16293,18 +16294,45 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
     return ExprError();
 
   MemberExpr *MemExpr;
-  CXXMethodDecl *Method = nullptr;
+  FunctionDecl *FuncDecl = nullptr;
+  SmallVector<Expr *, 8> ArgsWithMember;
+  // CXXMethodDecl *Method = nullptr;
   bool HadMultipleCandidates = false;
   DeclAccessPair FoundDecl = DeclAccessPair::make(nullptr, AS_public);
   NestedNameSpecifier Qualifier = std::nullopt;
   if (isa<MemberExpr>(NakedMemExpr)) {
     MemExpr = cast<MemberExpr>(NakedMemExpr);
-    Method = cast<CXXMethodDecl>(MemExpr->getMemberDecl());
+    FuncDecl = cast<FunctionDecl>(MemExpr->getMemberDecl());
     FoundDecl = MemExpr->getFoundDecl();
     Qualifier = MemExpr->getQualifier();
     UnbridgedCasts.restore();
+    if (!MemExpr->isImplicitAccess())
+    {
+      Expr *Base = MemExpr->getBase();
+      if (MemExpr->isArrow()) {
+        Base = UnaryOperator::Create(
+            Context, Base, UO_Deref,
+            Base->getType()->castAs<PointerType>()->getPointeeType(), VK_LValue,
+            OK_Ordinary, MemExpr->getBeginLoc(), /*CanOverflow=*/false,
+            CurFPFeatureOverrides());
+      }
+
+      ArgsWithMember.push_back(Base);
+    }
+    ArgsWithMember.append(Args.begin(),Args.end());
   } else {
     UnresolvedMemberExpr *UnresExpr = cast<UnresolvedMemberExpr>(NakedMemExpr);
+    if (!UnresExpr->isImplicitAccess()) {
+      Expr *Base = UnresExpr->getBase();
+
+      if (UnresExpr->isArrow()) {
+        Base = UnaryOperator::Create(Context,Base, UO_Deref,Base->getType()->castAs<PointerType>()->getPointeeType(), VK_LValue,OK_Ordinary, UnresExpr->getBeginLoc(), /*CanOverflow=*/false,    CurFPFeatureOverrides());
+      }
+
+      ArgsWithMember.push_back(Base);
+    }
+    ArgsWithMember.append(Args.begin(), Args.end());
+
     Qualifier = UnresExpr->getQualifier();
 
     QualType ObjectType = UnresExpr->getBaseType();
@@ -16313,6 +16341,7 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
                             : UnresExpr->getBase()->Classify(Context);
 
     // Add overload candidates
+    OverloadCandidateSet UFCSCandidateSet(UnresExpr->getMemberLoc(), OverloadCandidateSet::CSK_Normal);
     OverloadCandidateSet CandidateSet(UnresExpr->getMemberLoc(),
                                       OverloadCandidateSet::CSK_Normal);
 
@@ -16329,7 +16358,7 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
       QualType ExplicitObjectType = ObjectType;
 
       NamedDecl *Func = *I;
-      CXXRecordDecl *ActingDC = cast<CXXRecordDecl>(Func->getDeclContext());
+      CXXRecordDecl *ActingDC = dyn_cast<CXXRecordDecl>(Func->getDeclContext());
       if (isa<UsingShadowDecl>(Func))
         Func = cast<UsingShadowDecl>(Func)->getTargetDecl();
 
@@ -16350,21 +16379,34 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
         AddOverloadCandidate(cast<CXXConstructorDecl>(Func), I.getPair(), Args,
                              CandidateSet,
                              /*SuppressUserConversions*/ false);
-      } else if ((Method = dyn_cast<CXXMethodDecl>(Func))) {
+      } else if ((FuncDecl = dyn_cast<FunctionDecl>(Func))) {
         // If explicit template arguments were provided, we can't call a
         // non-template member function.
         if (TemplateArgs)
           continue;
 
-        AddMethodCandidate(Method, I.getPair(), ActingDC, ExplicitObjectType,
-                           ObjectClassification, Args, CandidateSet,
-                           /*SuppressUserConversions=*/false);
+        if (auto *Method = dyn_cast<CXXMethodDecl>(FuncDecl)) {
+          assert(ActingDC && "MethodDecl, but no class decl context?");
+
+          AddMethodCandidate(Method, I.getPair(), ActingDC, ExplicitObjectType,
+                             ObjectClassification, Args, CandidateSet,
+                             /*SuppressUserConversions=*/false);
+        } else {
+          AddOverloadCandidate(FuncDecl, I.getPair(), ArgsWithMember,
+                               UFCSCandidateSet,
+                               /*SuppressUserConversions=*/false);
+        }
       } else {
-        AddMethodTemplateCandidate(cast<FunctionTemplateDecl>(Func),
-                                   I.getPair(), ActingDC, TemplateArgs,
-                                   ExplicitObjectType, ObjectClassification,
-                                   Args, CandidateSet,
-                                   /*SuppressUserConversions=*/false);
+        auto *FTD = cast<FunctionTemplateDecl>(Func);
+        if (isa<CXXMethodDecl>(FTD->getTemplatedDecl())) {
+          AddMethodTemplateCandidate(FTD, I.getPair(), ActingDC, TemplateArgs,
+                                     ExplicitObjectType, ObjectClassification,
+                                     Args, CandidateSet,
+                                     /*SuppressUserConversions=*/false);
+        } else {
+          this->AddTemplateOverloadCandidate(FTD, I.getPair(), TemplateArgs,
+                                             ArgsWithMember, UFCSCandidateSet);
+        }
       }
     }
 
@@ -16376,12 +16418,35 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
 
     OverloadCandidateSet::iterator Best;
     bool Succeeded = false;
+
+    auto IsPrivate = [&](const DeclAccessPair &FoundDecl) -> bool {
+      // This is so hacky...
+      auto &Diags = Context.getDiagnostics();
+      Diags.setSuppressAllDiagnostics(true);
+      AccessResult AR = CheckUnresolvedMemberAccess(UnresExpr, FoundDecl);
+      Diags.setSuppressAllDiagnostics(false);
+      return AR != AR_accessible;
+    };
+    auto TryUFCSFallback = [&]() -> bool {
+      OverloadCandidateSet::iterator UFCSBest;
+      if (UFCSCandidateSet.BestViableFunction(*this, UnresExpr->getBeginLoc(),
+                                              UFCSBest) == OR_Success) {
+        Best = UFCSBest;
+        FuncDecl = cast<FunctionDecl>(Best->Function);
+        FoundDecl = Best->FoundDecl;
+        return true;
+      }
+      return false;
+    };
     switch (CandidateSet.BestViableFunction(*this, UnresExpr->getBeginLoc(),
                                             Best)) {
     case OR_Success:
-      Method = cast<CXXMethodDecl>(Best->Function);
-      FoundDecl = Best->FoundDecl;
-      CheckUnresolvedMemberAccess(UnresExpr, Best->FoundDecl);
+      if (!IsPrivate(Best->FoundDecl) || !TryUFCSFallback()) {
+        FuncDecl = cast<FunctionDecl>(Best->Function);
+        FoundDecl = Best->FoundDecl;
+        CheckUnresolvedMemberAccess(UnresExpr, Best->FoundDecl);
+      }
+
       if (DiagnoseUseOfOverloadedDecl(Best->FoundDecl, UnresExpr->getNameLoc()))
         break;
       // If FoundDecl is different from Method (such as if one is a template
@@ -16390,20 +16455,41 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
       // FIXME: This would be more comprehensively addressed by modifying
       // DiagnoseUseOfDecl to accept both the FoundDecl and the decl
       // being used.
-      if (Method != FoundDecl.getDecl() &&
-          DiagnoseUseOfOverloadedDecl(Method, UnresExpr->getNameLoc()))
+      if (FuncDecl != FoundDecl.getDecl() &&
+          DiagnoseUseOfOverloadedDecl(FuncDecl, UnresExpr->getNameLoc()))
         break;
       Succeeded = true;
       break;
+    case OR_No_Viable_Function: {
+      bool AllPrivate = true;
+      for (const auto &Cand : CandidateSet) {
+        if (!IsPrivate(Cand.FoundDecl)) {
+          AllPrivate = false;
+          break;
+        }
+      }
 
-    case OR_No_Viable_Function:
+      if (AllPrivate && TryUFCSFallback()) {
+        Succeeded = true;
+        break;
+      }
+
       CandidateSet.NoteCandidates(
           PartialDiagnosticAt(
               UnresExpr->getMemberLoc(),
               PDiag(diag::err_ovl_no_viable_member_function_in_call)
                   << DeclName << MemExprE->getSourceRange()),
           *this, OCD_AllCandidates, Args);
+
+      if (AllPrivate) {
+        UFCSCandidateSet.NoteCandidates(
+            PartialDiagnosticAt(UnresExpr->getMemberLoc(),
+                                PDiag(diag::err_ovl_no_viable_function_in_call)
+                                    << DeclName << MemExprE->getSourceRange()),
+            *this, OCD_AllCandidates, ArgsWithMember);
+      }
       break;
+    }
     case OR_Ambiguous:
       CandidateSet.NoteCandidates(
           PartialDiagnosticAt(UnresExpr->getMemberLoc(),
@@ -16412,6 +16498,10 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
           *this, OCD_AmbiguousCandidates, Args);
       break;
     case OR_Deleted:
+      if (IsPrivate(Best->FoundDecl) && TryUFCSFallback()) {
+            Succeeded = true;
+            break;
+        }
       DiagnoseUseOfDeletedFunction(
           UnresExpr->getMemberLoc(), MemExprE->getSourceRange(), DeclName,
           CandidateSet, Best->Function, Args, /*IsMember=*/true);
@@ -16422,30 +16512,34 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
       return BuildRecoveryExpr(chooseRecoveryType(CandidateSet, &Best));
 
     ExprResult Res =
-        FixOverloadedFunctionReference(MemExprE, FoundDecl, Method);
+        FixOverloadedFunctionReference(MemExprE, FoundDecl, FuncDecl);
     if (Res.isInvalid())
       return ExprError();
     MemExprE = Res.get();
 
     // If overload resolution picked a static member
     // build a non-member call based on that function.
-    if (Method->isStatic()) {
-      return BuildResolvedCallExpr(MemExprE, Method, LParenLoc, Args, RParenLoc,
-                                   ExecConfig, IsExecConfig);
+    if (auto *Method = dyn_cast<CXXMethodDecl>(FuncDecl)) {
+      if (Method->isStatic()) {
+        return BuildResolvedCallExpr(MemExprE, FuncDecl, LParenLoc, Args,
+                                     RParenLoc, ExecConfig, IsExecConfig);
+      }
     }
-
     MemExpr = cast<MemberExpr>(MemExprE->IgnoreParens());
   }
 
-  QualType ResultType = Method->getReturnType();
+  QualType ResultType = FuncDecl->getReturnType();
   ExprValueKind VK = Expr::getValueKindForType(ResultType);
   ResultType = ResultType.getNonLValueExprType(Context);
 
-  assert(Method && "Member call to something that isn't a method?");
-  const auto *Proto = Method->getType()->castAs<FunctionProtoType>();
+  assert(FuncDecl && "Member call to something that isn't a method?");
+  const auto *Proto = FuncDecl->getType()->castAs<FunctionProtoType>();
 
   CallExpr *TheCall = nullptr;
   llvm::SmallVector<Expr *, 8> NewArgs;
+
+  if(auto Method = dyn_cast<CXXMethodDecl>(FuncDecl)) {
+
   if (Method->isExplicitObjectMemberFunction()) {
     if (PrepareExplicitObjectArgument(*this, Method, MemExpr->getBase(), Args,
                                       NewArgs))
@@ -16473,20 +16567,40 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
                                         RParenLoc, CurFPFeatureOverrides(),
                                         Proto->getNumParams());
   }
+  }
+  else {
+    if (completeFunctionType(*this, FuncDecl, MemExpr->getMemberLoc()))
+      return ExprError();
 
+    ResultType = FuncDecl->getReturnType();
+    VK = Expr::getValueKindForType(ResultType);
+    ResultType = ResultType.getNonLValueExprType(Context);
+
+    ExprResult FnExpr =
+        CreateFunctionRefExpr(*this, FuncDecl, FoundDecl, MemExpr,
+                              HadMultipleCandidates, MemExpr->getMemberLoc());
+    if (FnExpr.isInvalid())
+      return ExprError();
+    Args = ArgsWithMember;
+    TheCall =
+        CallExpr::Create(Context, FnExpr.get(), Args, ResultType, VK, RParenLoc,
+                         CurFPFeatureOverrides(), Proto->getNumParams());
+
+    TheCall->setUsesMemberSyntax(true);
+    MemExprE = FnExpr.get();
+  }
   // Check for a valid return type.
-  if (CheckCallReturnType(Method->getReturnType(), MemExpr->getMemberLoc(),
-                          TheCall, Method))
+  if (CheckCallReturnType(FuncDecl->getReturnType(), MemExpr->getMemberLoc(),
+                          TheCall, FuncDecl))
     return BuildRecoveryExpr(ResultType);
 
   // Convert the rest of the arguments
-  if (ConvertArgumentsForCall(TheCall, MemExpr, Method, Proto, Args,
-                              RParenLoc))
+  if (ConvertArgumentsForCall(TheCall, MemExpr, FuncDecl, Proto, Args, RParenLoc))
     return BuildRecoveryExpr(ResultType);
 
-  DiagnoseSentinelCalls(Method, LParenLoc, Args);
+  DiagnoseSentinelCalls(FuncDecl, LParenLoc, Args);
 
-  if (CheckFunctionCall(Method, TheCall, Proto))
+  if (CheckFunctionCall(FuncDecl, TheCall, Proto))
     return ExprError();
 
   // In the case the method to call was not selected by the overloading
@@ -16494,11 +16608,11 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
   // that here, so it will not hide previous -- and more relevant -- errors.
   if (auto *MemE = dyn_cast<MemberExpr>(NakedMemExpr)) {
     if (const EnableIfAttr *Attr =
-            CheckEnableIf(Method, LParenLoc, Args, true)) {
+            CheckEnableIf(FuncDecl, LParenLoc, Args, true)) {
       Diag(MemE->getMemberLoc(),
            diag::err_ovl_no_viable_member_function_in_call)
-          << Method << Method->getSourceRange();
-      Diag(Method->getLocation(),
+          << FuncDecl << FuncDecl->getSourceRange();
+      Diag(FuncDecl->getLocation(),
            diag::note_ovl_candidate_disabled_by_function_cond_attr)
           << Attr->getCond()->getSourceRange() << Attr->getMessage();
       return ExprError();
@@ -17256,7 +17370,10 @@ ExprResult Sema::FixOverloadedFunctionReference(Expr *E, DeclAccessPair Found,
 
     ExprValueKind valueKind;
     QualType type;
-    if (cast<CXXMethodDecl>(Fn)->isStatic()) {
+    if (!isa<CXXMethodDecl>(Fn)) {
+      valueKind = VK_PRValue;
+      type = Context.BoundMemberTy;
+    } else if(cast<CXXMethodDecl>(Fn)->isStatic()) {
       valueKind = VK_LValue;
       type = Fn->getType();
     } else {

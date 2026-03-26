@@ -451,6 +451,11 @@ public:
     Microsoft = 2,
   };
 
+  enum class UFCSModeKind : uint8_t {
+    Disabled,
+    Extensions,
+    Herb
+  };
   // Define simple language options (with no accessors).
 #define LANGOPT(Name, Bits, Default, Compatibility, Description)               \
   unsigned Name : Bits;

@@ -9,6 +9,7 @@
 //  This file implements semantic analysis member access expressions.
 //
 //===----------------------------------------------------------------------===//
+#include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
@@ -638,8 +639,12 @@ bool Sema::CheckQualifiedMemberReference(Expr *BaseExpr,
 
     // Note that we use the DC of the decl, not the underlying decl.
     DeclContext *DC = (*I)->getDeclContext()->getNonTransparentContext();
-    if (!DC->isRecord())
+
+    if (!DC->isRecord()) {
+      if (isa<NamespaceDecl,TranslationUnitDecl>(DC))
+        return false;
       continue;
+    }
 
     CXXRecordDecl *MemberRecord = cast<CXXRecordDecl>(DC)->getCanonicalDecl();
     if (BaseRecord->getCanonicalDecl() == MemberRecord ||
@@ -972,11 +977,10 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
 
   // Construct an unresolved result if we in fact got an unresolved
   // result.
-  if (R.isOverloadedResult() || R.isUnresolvableResult()) {
+  if (R.isOverloadedResult() || R.isUnresolvableResult() || (R.isSingleResult() && R.getAsSingle<FunctionTemplateDecl>())) {
     // Suppress any lookup-related diagnostics; we'll do these when we
     // pick a member.
     R.suppressDiagnostics();
-
     UnresolvedMemberExpr *MemExpr
       = UnresolvedMemberExpr::Create(Context, R.isUnresolvableResult(),
                                      BaseExpr, BaseExprType,
@@ -1108,7 +1112,13 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
                            MemberFn, FoundDecl, /*HadMultipleCandidates=*/false,
                            MemberNameInfo, type, valueKind, OK_Ordinary);
   }
-  assert(!isa<FunctionDecl>(MemberDecl) && "member function not C++ method?");
+  if (auto *FuncDecl = dyn_cast<FunctionDecl>(MemberDecl)) {
+    return BuildMemberExpr(BaseExpr, IsArrow, OpLoc, SS.getWithLocInContext(Context), TemplateKWLoc,
+                           FuncDecl, FoundDecl,
+                           /*HadMultipleCandidates=*/false, MemberNameInfo,
+                           Context.BoundMemberTy, VK_PRValue, OK_Ordinary);
+
+  }
 
   if (EnumConstantDecl *Enum = dyn_cast<EnumConstantDecl>(MemberDecl)) {
     if (ConvertBaseExprToDiscardedValue())
@@ -1292,7 +1302,7 @@ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
   }
 
   // Handle field access to simple records.
-  if (BaseType->getAsRecordDecl()) {
+  if (true || BaseType->getAsRecordDecl()) {
     if (LookupMemberExprInRecord(S, R, BaseExpr.get(), BaseType, OpLoc, IsArrow,
                                  SS, HasTemplateArgs, TemplateKWLoc))
       return ExprError();

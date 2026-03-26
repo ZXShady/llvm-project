@@ -11741,7 +11741,8 @@ void Sema::CheckExplicitObjectMemberFunction(Declarator &D,
   if (IsLambda)
     return;
 
-  if (!DC || !DC->isRecord()) {
+  const bool IsExtensions = LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Extensions;
+  if (!IsExtensions && (!DC || !DC->isRecord())) {
     assert(D.isInvalidType() && "Explicit object parameter in non-member "
                                 "should have been diagnosed already");
     return;

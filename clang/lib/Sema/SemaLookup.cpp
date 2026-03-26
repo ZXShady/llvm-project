@@ -1364,6 +1364,9 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
             R.setShadowed();
             continue;
           }
+        } 
+        else if (NameKind == LookupMemberName && isa<FunctionDecl>(ND)) {
+            continue;
         } else {
           // We found something in this scope, we should not look at the
           // namespace scope
@@ -2476,6 +2479,42 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
     }
   }
 
+  if (LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled && LookupRec && R.getLookupName().isIdentifier() &&
+      R.getLookupKind() == LookupMemberName) {
+// #define ONLY_NAMESPACE_LOOKUP
+#ifdef ONLY_NAMESPACE_LOOKUP
+    DeclContext *Ctx = LookupRec->getDeclContext();
+    while (Ctx && !isa<NamespaceDecl>(Ctx) && !Ctx->isTranslationUnit())
+      Ctx = Ctx->getParent();
+    assert(Ctx);
+    LookupDirect(*this, R, Ctx);
+#else
+
+    SmallVector<Expr *, 1> Args;
+    CanQualType CanTy = Context.getCanonicalTagType(LookupRec);
+    OpaqueValueExpr FakeArg(LookupRec->getLocation(), CanTy, VK_LValue);
+    Args.push_back(&FakeArg);
+    ADLResult ADL;
+    ArgumentDependentLookup(R.getLookupName(), R.getNameLoc(), Args, ADL);
+    for (auto *Res : ADL) {
+      NamedDecl *D = R.getAcceptableDecl(Res);
+      FunctionDecl *Fn;
+
+      if (auto *FTD = dyn_cast<FunctionTemplateDecl>(D))
+        Fn = FTD->getTemplatedDecl();
+      else
+        Fn = dyn_cast<FunctionDecl>(D);
+      if (Fn) {
+        // HACK: not using hasCXXExplicitObjectParameter() because I made it only work for CXXMethodDecls, so I don't have to rewrite code.
+        if (LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Extensions && (Fn->getNumParams() == 0 || !Fn->getParamDecl(0)->isExplicitObjectParameter()))
+          continue;
+
+        R.addDecl(D);
+      }
+    }
+#endif
+    R.resolveKind();
+  }
   if (LookupDirect(*this, R, LookupCtx)) {
     R.resolveKind();
     if (LookupRec)
@@ -2543,9 +2582,9 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
 
   CXXBasePaths Paths;
   Paths.setOrigin(LookupRec);
-  if (!LookupRec->lookupInBases(BaseCallback, Paths))
-    return false;
 
+  if(!LookupRec->lookupInBases(BaseCallback, Paths))
+    return !R.empty();
   R.setNamingClass(LookupRec);
 
   // C++ [class.member.lookup]p2:
@@ -2557,7 +2596,6 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
   QualType SubobjectType;
   int SubobjectNumber = 0;
   AccessSpecifier SubobjectAccess = AS_none;
-
   // Check whether the given lookup result contains only static members.
   auto HasOnlyStaticMembers = [&](DeclContext::lookup_iterator Result) {
     for (DeclContext::lookup_iterator I = Result, E = I.end(); I != E; ++I)
