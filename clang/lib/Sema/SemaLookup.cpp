@@ -1365,7 +1365,8 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
             continue;
           }
         } 
-        else if (NameKind == LookupMemberName && isa<FunctionDecl>(ND)) {
+        else if (NameKind == LookupMemberName) {
+          if(isa<FunctionDecl>(ND) && LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Disabled)
             continue;
         } else {
           // We found something in this scope, we should not look at the
@@ -1477,7 +1478,7 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
   if (!S) return false;
 
   // If we are looking for members, no need to look into global/namespace scope.
-  if (NameKind == LookupMemberName)
+  if (LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Disabled && NameKind == LookupMemberName)
     return false;
 
   // Collect UsingDirectiveDecls in all scopes, and recursively all
@@ -2432,7 +2433,7 @@ static bool LookupQualifiedNameInUsingDirectives(Sema &S, LookupResult &R,
 }
 
 bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
-                               bool InUnqualifiedLookup) {
+                               bool InUnqualifiedLookup,Scope* S) {
   assert(LookupCtx && "Sema::LookupQualifiedName requires a lookup context");
 
   if (!R.getLookupName())
@@ -2462,6 +2463,7 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
   // FIXME: Per [temp.dep.general]p2, an unqualified name is also dependent
   // if it's a dependent conversion-function-id or operator= where the current
   // class is a templated entity. This should be handled in LookupName.
+  
   if (!InUnqualifiedLookup && !R.isForRedeclaration()) {
     // C++23 [temp.dep.type]p5:
     //   A qualified name is dependent if
@@ -2478,26 +2480,19 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
       return false;
     }
   }
-
-  if (LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled && LookupRec && R.getLookupName().isIdentifier() &&
-      R.getLookupKind() == LookupMemberName) {
-// #define ONLY_NAMESPACE_LOOKUP
-#ifdef ONLY_NAMESPACE_LOOKUP
-    DeclContext *Ctx = LookupRec->getDeclContext();
-    while (Ctx && !isa<NamespaceDecl>(Ctx) && !Ctx->isTranslationUnit())
-      Ctx = Ctx->getParent();
-    assert(Ctx);
-    LookupDirect(*this, R, Ctx);
-#else
-
-    SmallVector<Expr *, 1> Args;
-    CanQualType CanTy = Context.getCanonicalTagType(LookupRec);
-    OpaqueValueExpr FakeArg(LookupRec->getLocation(), CanTy, VK_LValue);
-    Args.push_back(&FakeArg);
+  bool TriesADL = false;
+  auto ADLLookup = [this,LookupCtx,&R]()
+  {
+    bool Found = false;
+    auto* TD =cast<TagDecl>(LookupCtx);
+    CanQualType CanTy = this->Context.getCanonicalTagType(TD);
+    OpaqueValueExpr FakeArg[1] = {OpaqueValueExpr(TD->getLocation(), CanTy, VK_LValue)};
     ADLResult ADL;
-    ArgumentDependentLookup(R.getLookupName(), R.getNameLoc(), Args, ADL);
+    this->ArgumentDependentLookup(R.getLookupName(), R.getNameLoc(), FakeArg, ADL);
     for (auto *Res : ADL) {
       NamedDecl *D = R.getAcceptableDecl(Res);
+      if(!D)
+        continue;  
       FunctionDecl *Fn;
 
       if (auto *FTD = dyn_cast<FunctionTemplateDecl>(D))
@@ -2510,13 +2505,27 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
           continue;
 
         R.addDecl(D);
+        Found = true;
       }
     }
-#endif
-    R.resolveKind();
-  }
-  if (LookupDirect(*this, R, LookupCtx)) {
-    R.resolveKind();
+    return Found; 
+  };
+
+        bool Found = LookupDirect(*this, R, LookupCtx);
+
+        if(llvm::isa_and_present<TagDecl>(LookupCtx) && R.getLookupKind() == LookupMemberName && S &&
+            getLangOpts().getUFCSMode() !=
+                LangOptions::UFCSModeKind::Disabled) {
+          if (!R.isSingleResult() || !R.getAsSingle<FieldDecl>()) {
+
+            Found |= ADLLookup() || LookupName(R, S, false);
+
+          }
+        }
+  if (Found) {
+
+        R.resolveKind();
+        
     if (LookupRec)
       R.setNamingClass(LookupRec);
     return true;
@@ -2739,11 +2748,11 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
 }
 
 bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
-                               CXXScopeSpec &SS) {
+                               CXXScopeSpec &SS,Scope* S) {
   NestedNameSpecifier Qualifier = SS.getScopeRep();
   if (Qualifier.getKind() == NestedNameSpecifier::Kind::MicrosoftSuper)
     return LookupInSuper(R, Qualifier.getAsMicrosoftSuper());
-  return LookupQualifiedName(R, LookupCtx);
+  return LookupQualifiedName(R, LookupCtx,/*InUnqualifiedLookup=*/false,S);
 }
 
 bool Sema::LookupParsedName(LookupResult &R, Scope *S, CXXScopeSpec *SS,
@@ -2790,8 +2799,9 @@ bool Sema::LookupParsedName(LookupResult &R, Scope *S, CXXScopeSpec *SS,
 
   // If we were able to compute a declaration context, perform qualified name
   // lookup in that context.
-  if (DC)
-    return LookupQualifiedName(R, DC);
+
+  if (DC) 
+    return LookupQualifiedName(R, DC,/*InUnqualifiedLookup=*/false,S);
   else if (IsDependent)
     // We could not resolve the scope specified to a specific declaration
     // context, which means that SS refers to an unknown specialization.

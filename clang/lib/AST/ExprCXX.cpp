@@ -1596,7 +1596,9 @@ static bool hasOnlyNonStaticMemberFunctions(UnresolvedSetIterator begin,
                                             UnresolvedSetIterator end) {
   do {
     NamedDecl *decl = *begin;
-    if (isa<UnresolvedUsingValueDecl>(decl))
+
+    // VarDecl can get here by UFCS lookup of a CPO.
+    if (isa<VarDecl,UnresolvedUsingValueDecl>(decl->getUnderlyingDecl()))
       return false;
 
     // Unresolved member expressions should only contain methods and
@@ -1633,8 +1635,10 @@ UnresolvedMemberExpr::UnresolvedMemberExpr(
 
   // Check whether all of the members are non-static member functions,
   // and if so, mark give this bound-member type instead of overload type.
+
   if (hasOnlyNonStaticMemberFunctions(Begin, End))
     setType(Context.BoundMemberTy);
+
 }
 
 UnresolvedMemberExpr::UnresolvedMemberExpr(EmptyShell Empty,

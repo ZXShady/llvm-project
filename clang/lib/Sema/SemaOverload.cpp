@@ -10627,11 +10627,11 @@ void Sema::AddBuiltinOperatorCandidates(OverloadedOperatorKind Op,
   }
 }
 
-void
-Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
+static void AddArgumentDependentLookupCandidatesUsingArgs(Sema& S,DeclarationName Name,
                                            SourceLocation Loc,
-                                           ArrayRef<Expr *> Args,
-                                 TemplateArgumentListInfo *ExplicitTemplateArgs,
+                                           ArrayRef<Expr *> ADLArgs,
+                                           ArrayRef<Expr *> CallArgs,
+                                           TemplateArgumentListInfo *ExplicitTemplateArgs,
                                            OverloadCandidateSet& CandidateSet,
                                            bool PartialOverloading) {
   ADLResult Fns;
@@ -10644,7 +10644,7 @@ Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
   // we supposed to consider on ADL candidates, anyway?
 
   // FIXME: Pass in the explicit template arguments?
-  ArgumentDependentLookup(Name, Loc, Args, Fns);
+  S.ArgumentDependentLookup(Name, Loc, ADLArgs, Fns);
 
   ArrayRef<Expr *> ReversedArgs;
 
@@ -10668,39 +10668,52 @@ Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
       if (ExplicitTemplateArgs)
         continue;
 
-      AddOverloadCandidate(
-          FD, FoundDecl, Args, CandidateSet, /*SuppressUserConversions=*/false,
+      S.AddOverloadCandidate(
+          FD, FoundDecl, CallArgs, CandidateSet, /*SuppressUserConversions=*/false,
           PartialOverloading, /*AllowExplicit=*/true,
-          /*AllowExplicitConversion=*/false, ADLCallKind::UsesADL);
-      if (CandidateSet.getRewriteInfo().shouldAddReversed(*this, Args, FD)) {
-        AddOverloadCandidate(
-            FD, FoundDecl, {Args[1], Args[0]}, CandidateSet,
+          /*AllowExplicitConversion=*/false, Sema::ADLCallKind::UsesADL);
+      if (CandidateSet.getRewriteInfo().shouldAddReversed(S, CallArgs, FD)) {
+        S.AddOverloadCandidate(
+            FD, FoundDecl, {CallArgs[1],CallArgs[0]}, CandidateSet,
             /*SuppressUserConversions=*/false, PartialOverloading,
             /*AllowExplicit=*/true, /*AllowExplicitConversion=*/false,
-            ADLCallKind::UsesADL, {}, OverloadCandidateParamOrder::Reversed);
+            Sema::ADLCallKind::UsesADL, {}, OverloadCandidateParamOrder::Reversed);
       }
     } else {
       auto *FTD = cast<FunctionTemplateDecl>(*I);
-      AddTemplateOverloadCandidate(
-          FTD, FoundDecl, ExplicitTemplateArgs, Args, CandidateSet,
+      S.AddTemplateOverloadCandidate(
+          FTD, FoundDecl, ExplicitTemplateArgs, CallArgs, CandidateSet,
           /*SuppressUserConversions=*/false, PartialOverloading,
-          /*AllowExplicit=*/true, ADLCallKind::UsesADL);
+          /*AllowExplicit=*/true, Sema::ADLCallKind::UsesADL);
       if (CandidateSet.getRewriteInfo().shouldAddReversed(
-              *this, Args, FTD->getTemplatedDecl())) {
+              S, CallArgs, FTD->getTemplatedDecl())) {
 
         // As template candidates are not deduced immediately,
         // persist the array in the overload set.
         if (ReversedArgs.empty())
-          ReversedArgs = CandidateSet.getPersistentArgsArray(Args[1], Args[0]);
+          ReversedArgs = CandidateSet.getPersistentArgsArray(CallArgs[1], CallArgs[0]);
 
-        AddTemplateOverloadCandidate(
+        S.AddTemplateOverloadCandidate(
             FTD, FoundDecl, ExplicitTemplateArgs, ReversedArgs, CandidateSet,
             /*SuppressUserConversions=*/false, PartialOverloading,
-            /*AllowExplicit=*/true, ADLCallKind::UsesADL,
+            /*AllowExplicit=*/true, Sema::ADLCallKind::UsesADL,
             OverloadCandidateParamOrder::Reversed);
       }
     }
   }
+}
+
+
+void
+Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
+                                           SourceLocation Loc,
+                                           ArrayRef<Expr *> Args,
+                                 TemplateArgumentListInfo *ExplicitTemplateArgs,
+                                           OverloadCandidateSet& CandidateSet,
+                                           bool PartialOverloading) {
+
+
+  AddArgumentDependentLookupCandidatesUsingArgs(*this,Name,Loc,Args,Args,ExplicitTemplateArgs,CandidateSet,PartialOverloading);
 }
 
 namespace {
@@ -14501,6 +14514,7 @@ void Sema::AddOverloadedCallCandidates(
 
 /// Determine whether a declaration with the specified name could be moved into
 /// a different namespace.
+
 static bool canBeDeclaredInNamespace(const DeclarationName &Name) {
   switch (Name.getCXXOverloadedOperator()) {
   case OO_New: case OO_Array_New:
@@ -16300,9 +16314,15 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
   bool HadMultipleCandidates = false;
   DeclAccessPair FoundDecl = DeclAccessPair::make(nullptr, AS_public);
   NestedNameSpecifier Qualifier = std::nullopt;
+  const bool DoADL = true; 
+
   if (isa<MemberExpr>(NakedMemExpr)) {
     MemExpr = cast<MemberExpr>(NakedMemExpr);
     FuncDecl = cast<FunctionDecl>(MemExpr->getMemberDecl());
+    
+    
+    
+
     FoundDecl = MemExpr->getFoundDecl();
     Qualifier = MemExpr->getQualifier();
     UnbridgedCasts.restore();
@@ -16331,6 +16351,7 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
 
       ArgsWithMember.push_back(Base);
     }
+    
     ArgsWithMember.append(Args.begin(), Args.end());
 
     Qualifier = UnresExpr->getQualifier();
@@ -16357,10 +16378,18 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
 
       QualType ExplicitObjectType = ObjectType;
 
-      NamedDecl *Func = *I;
+      NamedDecl *Func = (*I)->getUnderlyingDecl();
+      if (auto *V = dyn_cast<VarDecl>(Func)) {
+        ExprResult VarRef = BuildDeclarationNameExpr(
+      CXXScopeSpec(), DeclarationNameInfo(V->getDeclName(), UnresExpr->getMemberLoc()), V);
+
+        if (VarRef.isInvalid())
+          return ExprError();
+        return BuildCallToObjectOfClassType(S,
+                                            VarRef.get(),
+                                            LParenLoc, ArgsWithMember, RParenLoc);
+      }
       CXXRecordDecl *ActingDC = dyn_cast<CXXRecordDecl>(Func->getDeclContext());
-      if (isa<UsingShadowDecl>(Func))
-        Func = cast<UsingShadowDecl>(Func)->getTargetDecl();
 
       bool HasExplicitParameter = false;
       if (const auto *M = dyn_cast<FunctionDecl>(Func);
@@ -16392,12 +16421,14 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
                              ObjectClassification, Args, CandidateSet,
                              /*SuppressUserConversions=*/false);
         } else {
+          // AddArgumentDependentLookupCandidatesUsingArgs(*this,UnresExpr->getName(),UnresExpr->getMemberLoc(),ArgsWithMember,ArgsWithMember,TemplateArgs,UFCSCandidateSet,false);
           AddOverloadCandidate(FuncDecl, I.getPair(), ArgsWithMember,
                                UFCSCandidateSet,
                                /*SuppressUserConversions=*/false);
         }
       } else {
         auto *FTD = cast<FunctionTemplateDecl>(Func);
+
         if (isa<CXXMethodDecl>(FTD->getTemplatedDecl())) {
           AddMethodTemplateCandidate(FTD, I.getPair(), ActingDC, TemplateArgs,
                                      ExplicitObjectType, ObjectClassification,

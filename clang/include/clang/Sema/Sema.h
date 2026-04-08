@@ -9535,7 +9535,7 @@ public:
   ///
   /// \returns true if lookup succeeded, false if it failed.
   bool LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
-                           bool InUnqualifiedLookup = false);
+                           bool InUnqualifiedLookup = false,Scope* S = nullptr);
 
   /// Performs qualified name lookup or special type of lookup for
   /// "__super::" scope specifier.
@@ -9553,7 +9553,7 @@ public:
   ///
   /// \returns true if lookup succeeded, false if it failed.
   bool LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
-                           CXXScopeSpec &SS);
+                           CXXScopeSpec &SS, Scope* S = nullptr);
 
   /// Performs name lookup for a name that was parsed in the
   /// source code, and may contain a C++ scope specifier.
