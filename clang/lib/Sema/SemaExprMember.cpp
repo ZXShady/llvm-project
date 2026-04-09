@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/AST/Decl.h"
+#include "clang/AST/DeclAccessPair.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
@@ -628,7 +629,7 @@ bool Sema::CheckQualifiedMemberReference(Expr *BaseExpr,
   if (!BaseRecord) {
     // We can't check this yet because the base type is still
     // dependent.
-    assert(BaseType->isDependentType());
+    assert(LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled || BaseType->isDependentType());
     return false;
   }
 
@@ -930,8 +931,9 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
       IsInFnTryBlockHandler(S))
     Diag(MemberLoc, diag::warn_cdtor_function_try_handler_mem_expr)
         << isa<CXXDestructorDecl>(FD);
+  const bool IsUFCS = LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled;
 
-  if (R.empty()) {
+  if (R.empty() && !IsUFCS) {
     ExprResult RetryExpr = ExprError();
     if (ExtraArgs && !IsArrow && BaseExpr && !BaseExpr->isTypeDependent()) {
       SFINAETrap Trap(*this, true);
@@ -951,8 +953,31 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
     }
 
     // Rederive where we looked up.
+    QualType LookupType = BaseType;
+    if (IsUFCS) {
+      if (LookupType->isReferenceType())
+        LookupType = LookupType.getNonReferenceType();
+
+      while (true) {
+        if (LookupType->isAnyPointerType())
+          LookupType = LookupType->getPointeeType();
+        else if (const ArrayType *AT = LookupType->getAsArrayTypeUnsafe())
+          LookupType = AT->getElementType();
+        else if (const AtomicType *AT = LookupType->getAs<AtomicType>())
+          LookupType = AT->getValueType();
+        else
+          break;
+      }
+      LookupType = LookupType.getCanonicalType().getUnqualifiedType();
+    }
+
     DeclContext *DC =
-        (SS.isSet() ? computeDeclContext(SS) : computeDeclContext(BaseType));
+        (SS.isSet() ? computeDeclContext(SS) : computeDeclContext(LookupType));
+
+    // If UFCS is on and we still can't find a DC (like for a builtin `int`),
+    // must return RetryExpr or an Error to avoid a CodeGen crash.
+    if (!DC && IsUFCS)
+      return RetryExpr.isUsable() ? RetryExpr : ExprError();
     assert(DC);
 
     if (RetryExpr.isUsable())
@@ -981,22 +1006,29 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
       CheckQualifiedMemberReference(BaseExpr, BaseType, SS, R))
     return ExprError();
 
-  // Construct an unresolved result if we in fact got an unresolved
-  // result.
-  bool Unresolved = false;
-  if (R.isSingleResult()) {
-    const auto *FD = R.getFoundDecl()->getUnderlyingDecl();
-    if (isa<FunctionTemplateDecl>(FD))
+
+  bool Unresolved = R.empty();
+  if (!Unresolved && R.isSingleResult()) {
+    NamedDecl *FoundDecl = R.getFoundDecl();
+    auto *FD = FoundDecl->getUnderlyingDecl();
+
+    if (isa<FunctionTemplateDecl>(FD)) {
       Unresolved = true;
-    else if (const auto *V = dyn_cast<VarDecl>(FD))
+    } else if (const auto *V = dyn_cast<VarDecl>(FD)) {
       Unresolved = !V->isStaticDataMember();
+    }
+    DeclAccessPair FoundDeclPair = R.begin().getPair();
+      // Unresolved = true;
+      Unresolved |= isa<CXXThisExpr>(BaseExpr) &&
+        !cast<CXXThisExpr>(BaseExpr)->isImplicit();
   }
 
-  if (R.isOverloadedResult() || R.isUnresolvableResult() || Unresolved) {
+  // Construct an unresolved result if we in fact got an unresolved
+  // result.
+  if (Unresolved || R.isOverloadedResult() || R.isUnresolvableResult()) {
     // Suppress any lookup-related diagnostics; we'll do these when we
     // pick a member.
     R.suppressDiagnostics();
-
     UnresolvedMemberExpr *MemExpr
       = UnresolvedMemberExpr::Create(Context, R.isUnresolvableResult(),
                                      BaseExpr, BaseExprType,
@@ -1318,22 +1350,48 @@ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
         BaseExpr.get()->getValueKind(), FPOptionsOverride());
   }
 
-  // Handle field access to simple records.
-  if (BaseType->isEnumeralType() || BaseType->getAsRecordDecl()) {
-    if (LookupMemberExprInRecord(S, R, BaseExpr.get(), BaseType, OpLoc, IsArrow,
-                                 SS, HasTemplateArgs, TemplateKWLoc,UFCSScope))
-      return ExprError();
+ {
+    // Handle field access to simple records.
+    const bool IsUFCS =
+        S.LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled;
 
-    // Returning valid-but-null is how we indicate to the caller that
-    // the lookup result was filled in. If typo correction was attempted and
-    // failed, the lookup result will have been cleared--that combined with the
-    // valid-but-null ExprResult will trigger the appropriate diagnostics.
-    return ExprResult{};
-  } else if (BaseType->isDependentType()) {
-    R.setNotFoundInCurrentInstantiation();
-    return ExprEmpty();
+    // Peel the type to find what it actually points to/holds
+    QualType Underlying = BaseType;
+    if (Underlying->isReferenceType())
+      Underlying = Underlying.getNonReferenceType();
+    
+    while (true) {
+      if (Underlying->isAnyPointerType())
+        Underlying = Underlying->getPointeeType();
+      else if (const ArrayType *AT = Underlying->getAsArrayTypeUnsafe())
+        Underlying = AT->getElementType();
+      else if (const AtomicType *AT = Underlying->getAs<AtomicType>())
+        Underlying = AT->getValueType();
+      else
+        break;
+    }
+    const bool IsBuiltinWithoutScope = SS.isEmpty() && Underlying->isBuiltinType();
+
+    const bool LookupInMember =
+        IsUFCS ? (!BaseType->isDependentType() && !IsBuiltinWithoutScope)
+               : (BaseType->getAsRecordDecl() != nullptr);
+
+    if (LookupInMember) {
+      if (LookupMemberExprInRecord(S, R, BaseExpr.get(), BaseType, OpLoc,
+                                   IsArrow, SS, HasTemplateArgs, TemplateKWLoc,
+                                   UFCSScope))
+        return ExprError();
+
+      // Returning valid-but-null is how we indicate to the caller that
+      // the lookup result was filled in. If typo correction was attempted and
+      // failed, the lookup result will have been cleared--that combined with
+      // the valid-but-null ExprResult will trigger the appropriate diagnostics.
+      return ExprResult{};
+    } else if (BaseType->isDependentType()) {
+      R.setNotFoundInCurrentInstantiation();
+      return ExprEmpty();
+    }
   }
-
   // Handle ivar access to Objective-C objects.
   if (const ObjCObjectType *OTy = BaseType->getAs<ObjCObjectType>()) {
     if (!SS.isEmpty() && !SS.isInvalid()) {
@@ -1681,7 +1739,7 @@ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
   //   - 'type' is an Objective C type
   //   - 'bar' is a pseudo-destructor name which happens to refer to
   //     the appropriate pointer type
-  if (const PointerType *Ptr = BaseType->getAs<PointerType>()) {
+  if (const PointerType *Ptr = BaseType->getAs<PointerType>();Ptr && S.LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Disabled) {
     if (!IsArrow && Ptr->getPointeeType()->isRecordType() &&
         MemberName.getNameKind() != DeclarationName::CXXDestructorName) {
       S.Diag(OpLoc, diag::err_typecheck_member_reference_suggestion)

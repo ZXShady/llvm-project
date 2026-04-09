@@ -1594,20 +1594,20 @@ CXXThisExpr *CXXThisExpr::CreateEmpty(const ASTContext &Ctx) {
 
 static bool hasOnlyNonStaticMemberFunctions(UnresolvedSetIterator begin,
                                             UnresolvedSetIterator end) {
-  do {
+  for (; begin != end; ++begin) {
     NamedDecl *decl = *begin;
 
     // VarDecl can get here by UFCS lookup of a CPO.
-    if (isa<VarDecl,UnresolvedUsingValueDecl>(decl->getUnderlyingDecl()))
+    if (isa<VarDecl, UnresolvedUsingValueDecl>(decl->getUnderlyingDecl()))
       return false;
 
     // Unresolved member expressions should only contain methods and
     // method templates.
-    if (const auto *M = dyn_cast<CXXMethodDecl>(
-            decl->getUnderlyingDecl()->getAsFunction()))
+    if (const auto *M =
+            dyn_cast<CXXMethodDecl>(decl->getUnderlyingDecl()->getAsFunction()))
       if (M->isStatic())
         return false;
-  } while (++begin != end);
+  }
 
   return true;
 }

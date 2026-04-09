@@ -2640,11 +2640,22 @@ bool Parser::ParseUnqualifiedId(CXXScopeSpec &SS, ParsedType ObjectType,
 
     // If the next token is a '<', we may have a template.
     TemplateTy Template;
-    if (Tok.is(tok::less))
+    if (Tok.is(tok::less)) {
+      bool AssumeTemplate = TemplateSpecified;
+
+      if (!AssumeTemplate && ObjectType && 
+          getLangOpts().getUFCSMode() != LangOptions::UFCSModeKind::Disabled) {
+        
+        const auto T = ObjectType.get();
+        if (!T.isNull() && !T->isDependentType())
+          if (isTemplateArgumentList(0) == TPResult::True)
+            AssumeTemplate = true;
+      }
       return ParseUnqualifiedIdTemplateId(
-          SS, ObjectType, ObjectHadErrors,
-          TemplateKWLoc ? *TemplateKWLoc : SourceLocation(), Id, IdLoc,
-          EnteringContext, Result, TemplateSpecified);
+        SS, ObjectType, ObjectHadErrors,
+        TemplateKWLoc ? *TemplateKWLoc : SourceLocation(), Id, IdLoc,
+        EnteringContext, Result, AssumeTemplate);
+      }
 
     if (TemplateSpecified) {
       TemplateNameKind TNK =

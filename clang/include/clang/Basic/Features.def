@@ -390,5 +390,9 @@ EXTENSION(cxx_type_aware_allocators, true)
 // Overflow behavior types
 EXTENSION(overflow_behavior_types, LangOpts.OverflowBehaviorTypes)
 
+FEATURE(ufcs_all, LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled)
+FEATURE(ufcs_herb, LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Herb)
+FEATURE(ufcs_extensions, LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Extensions)
+
 #undef EXTENSION
 #undef FEATURE

@@ -1478,8 +1478,12 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
   if (!S) return false;
 
   // If we are looking for members, no need to look into global/namespace scope.
-  if (LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Disabled && NameKind == LookupMemberName)
-    return false;
+  if(LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled) {
+    if (NameKind == LookupMemberName && R.isForRedeclaration())
+      return false;
+  } else if (NameKind == LookupMemberName) {
+      return false;
+  }
 
   // Collect UsingDirectiveDecls in all scopes, and recursively all
   // nominated namespaces by those using-directives.
@@ -1503,17 +1507,18 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
   for (; S; S = S->getParent()) {
     // Check whether the IdResolver has anything in this scope.
     bool Found = false;
-    for (; I != IEnd && S->isDeclScope(*I); ++I) {
-      if (NamedDecl *ND = R.getAcceptableDecl(*I)) {
-        // We found something.  Look for anything else in our scope
-        // with this same name and in an acceptable identifier
-        // namespace, so that we can construct an overload set if we
-        // need to.
-        Found = true;
-        R.addDecl(ND);
+    if (NameKind != LookupMemberName || R.isForRedeclaration()) {
+      for (; I != IEnd && S->isDeclScope(*I); ++I) {
+        if (NamedDecl *ND = R.getAcceptableDecl(*I)) {
+          // We found something.  Look for anything else in our scope
+          // with this same name and in an acceptable identifier
+          // namespace, so that we can construct an overload set if we
+          // need to.
+          Found = true;
+          R.addDecl(ND);
+        }
       }
     }
-
     if (Found && S->isTemplateParamScope()) {
       R.resolveKind();
       return true;
@@ -2480,10 +2485,8 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
       return false;
     }
   }
-  bool TriesADL = false;
   auto ADLLookup = [this,LookupCtx,&R]()
   {
-    bool Found = false;
     auto* TD =cast<TagDecl>(LookupCtx);
     CanQualType CanTy = this->Context.getCanonicalTagType(TD);
     OpaqueValueExpr FakeArg[1] = {OpaqueValueExpr(TD->getLocation(), CanTy, VK_LValue)};
@@ -2505,26 +2508,35 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
           continue;
 
         R.addDecl(D);
-        Found = true;
       }
     }
-    return Found; 
   };
 
-        bool Found = LookupDirect(*this, R, LookupCtx);
+  const bool Found = LookupDirect(*this, R, LookupCtx);
+  if (false && /*S &&*/ llvm::isa_and_present<TagDecl>(LookupCtx) &&
+  R.getLookupKind() == LookupMemberName &&
+  getLangOpts().getUFCSMode() != LangOptions::UFCSModeKind::Disabled) {
+        bool ADL = true;
+        if (!R.empty()) {
+          auto It = R.begin();
+          if (std::next(It) == R.end()) {
+            Decl *D = *It;
 
-        if(llvm::isa_and_present<TagDecl>(LookupCtx) && R.getLookupKind() == LookupMemberName && S &&
-            getLangOpts().getUFCSMode() !=
-                LangOptions::UFCSModeKind::Disabled) {
-          if (!R.isSingleResult() || !R.getAsSingle<FieldDecl>()) {
-
-            Found |= ADLLookup() || LookupName(R, S, false);
-
+            if (isa<VarDecl>(D) || isa<FieldDecl>(D)) {
+              ADL = false;
+            }
           }
         }
+    if(ADL) ADLLookup();
+    // if (!(R.isSingleResult() && R.getAsSingle<FieldDecl>())) {
+    // Found |= ADLLookup();
+    // || LookupName(R, S, false);
+
+    // }
+  }
   if (Found) {
 
-        R.resolveKind();
+    R.resolveKind();
         
     if (LookupRec)
       R.setNamingClass(LookupRec);
@@ -2770,7 +2782,23 @@ bool Sema::LookupParsedName(LookupResult &R, Scope *S, CXXScopeSpec *SS,
     // x->B::f, and we are looking into the type of the object.
     assert((!SS || SS->isEmpty()) &&
            "ObjectType and scope specifier cannot coexist");
-    DC = computeDeclContext(ObjectType);
+    QualType T = ObjectType;
+    if (T->isReferenceType())
+      T = T.getNonReferenceType();
+
+    while (true) {
+      if (T->isAnyPointerType())
+        T = T->getPointeeType();
+      else if (const ArrayType *AT = T->getAsArrayTypeUnsafe())
+        T = AT->getElementType();
+      else if (const AtomicType *AT = T->getAs<AtomicType>())
+        T = AT->getValueType();
+      else
+        break;
+    }
+
+    DC = computeDeclContext(QualType(T->getUnqualifiedDesugaredType(),0));
+
     IsDependent = !DC && ObjectType->isDependentType();
     assert(((!DC && ObjectType->isDependentType()) ||
             !ObjectType->isIncompleteType() || !ObjectType->getAs<TagType>() ||

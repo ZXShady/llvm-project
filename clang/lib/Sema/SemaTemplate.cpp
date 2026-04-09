@@ -478,7 +478,7 @@ bool Sema::LookupTemplateName(LookupResult &Found, Scope *S, CXXScopeSpec &SS,
       //  FIXME: We should filter out all non-type templates here, particularly
       //  variable templates and concepts. But the exclusion of alias templates
       //  and template template parameters is a wording defect.
-      AllowFunctionTemplatesInLookup = false;
+      AllowFunctionTemplatesInLookup = getLangOpts().getUFCSMode() != LangOptions::UFCSModeKind::Disabled;
       ObjectTypeSearchedInScope = true;
     }
 
@@ -5115,6 +5115,15 @@ TemplateNameKind Sema::ActOnTemplateName(Scope *S,
     if (!LookupTemplateName(R, S, SS, ObjectType.get(), EnteringContext, RTK,
                             /*ATK=*/nullptr, /*AllowTypoCorrection=*/false) &&
         !R.isAmbiguous()) {
+
+      // For UFCS This is required to parse C++20 ADL templates
+      if (getLangOpts().CPlusPlus20 &&
+          getLangOpts().getUFCSMode() != LangOptions::UFCSModeKind::Disabled &&
+          ObjectType) {
+        Result =
+            TemplateTy::make(Context.getAssumedTemplateName(DNI.getName()));
+        return TNK_Undeclared_template;
+      }
       if (LookupCtx)
         Diag(Name.getBeginLoc(), diag::err_no_member)
             << DNI.getName() << LookupCtx << SS.getRange();

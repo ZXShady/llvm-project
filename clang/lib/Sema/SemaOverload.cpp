@@ -16421,7 +16421,6 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
                              ObjectClassification, Args, CandidateSet,
                              /*SuppressUserConversions=*/false);
         } else {
-          // AddArgumentDependentLookupCandidatesUsingArgs(*this,UnresExpr->getName(),UnresExpr->getMemberLoc(),ArgsWithMember,ArgsWithMember,TemplateArgs,UFCSCandidateSet,false);
           AddOverloadCandidate(FuncDecl, I.getPair(), ArgsWithMember,
                                UFCSCandidateSet,
                                /*SuppressUserConversions=*/false);
@@ -16441,6 +16440,36 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
       }
     }
 
+    if (getLangOpts().getUFCSMode() != LangOptions::UFCSModeKind::Disabled &&
+        !UnresExpr->getQualifier() && !ArgsWithMember.empty()) {
+
+      Expr *BaseOnly[] = {ArgsWithMember[0]};
+      AddArgumentDependentLookupCandidatesUsingArgs(
+          *this, UnresExpr->getMemberName(), UnresExpr->getMemberLoc(),
+          BaseOnly, ArgsWithMember, TemplateArgs, UFCSCandidateSet, false);
+
+      if (getLangOpts().getUFCSMode() ==
+          LangOptions::UFCSModeKind::Extensions) {
+        for (auto &C : UFCSCandidateSet) {
+          // Only bother checking candidates that are currently considered
+          // "good"
+          if (!C.Viable)
+            continue;
+
+          assert(C.Function && "Candidate has no function declaration");
+
+          bool hasExplicitThis =
+              (C.Function->getNumParams() > 0 &&
+               C.Function->getParamDecl(0)->isExplicitObjectParameter());
+
+          if (!hasExplicitThis) {
+            C.Viable = false;
+
+            C.FailureKind = ovl_fail_bad_target;
+          }
+        }
+      }
+    }
     HadMultipleCandidates = (CandidateSet.size() > 1);
 
     DeclarationName DeclName = UnresExpr->getMemberName();
@@ -16451,12 +16480,8 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
     bool Succeeded = false;
 
     auto IsPrivate = [&](const DeclAccessPair &FoundDecl) -> bool {
-      // This is so hacky...
-      auto &Diags = Context.getDiagnostics();
-      Diags.setSuppressAllDiagnostics(true);
-      AccessResult AR = CheckUnresolvedMemberAccess(UnresExpr, FoundDecl);
-      Diags.setSuppressAllDiagnostics(false);
-      return AR != AR_accessible;
+      const SFINAETrap Trap(*this,true);
+      return CheckUnresolvedMemberAccess(UnresExpr, FoundDecl) != AR_accessible;
     };
     auto TryUFCSFallback = [&]() -> bool {
       OverloadCandidateSet::iterator UFCSBest;
@@ -16527,6 +16552,11 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
                               PDiag(diag::err_ovl_ambiguous_member_call)
                                   << DeclName << MemExprE->getSourceRange()),
           *this, OCD_AmbiguousCandidates, Args);
+      UFCSCandidateSet.NoteCandidates(
+          PartialDiagnosticAt(UnresExpr->getMemberLoc(),
+                              PDiag(diag::err_ovl_ambiguous_call)
+                                  << DeclName << MemExprE->getSourceRange()),
+          *this, OCD_AmbiguousCandidates, ArgsWithMember);
       break;
     case OR_Deleted:
       if (IsPrivate(Best->FoundDecl) && TryUFCSFallback()) {
