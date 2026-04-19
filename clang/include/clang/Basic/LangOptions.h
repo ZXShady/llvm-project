@@ -452,10 +452,32 @@ public:
   };
 
   enum class UFCSModeKind : uint8_t {
+    /// Default C++ behavior.
     Disabled,
+    /// C#-style only allows free functions explicitly marked with a 'this' parameter.
     Extensions,
+    /// Allows any free function to be called using member syntax.
     Herb
   };
+
+  /// Controls the scope of Argument Dependent Lookup (ADL).
+  enum class UFCSLookupKind : bool {
+    /// Only perform ADL on the 'object' (the first argument).
+    Object,
+    /// Perform ADL on all arguments in the call.
+    All
+  };
+
+  /// Controls how the compiler chooses between a member and a free function.
+  enum class UFCSStrategyKind : bool {
+    /// Member-first fallback. If any member is found, free functions 
+    /// are never looked up, even if they would have been a better match.
+    TwoRound,
+    ///  Unified candidate set. All members and free functions are 
+    /// considered together; the best match wins regardless of its origin.
+    SingleRound
+  };
+
   // Define simple language options (with no accessors).
 #define LANGOPT(Name, Bits, Default, Compatibility, Description)               \
   unsigned Name : Bits;

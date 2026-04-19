@@ -11723,7 +11723,9 @@ void Sema::CheckExplicitObjectMemberFunction(Declarator &D,
   //
   // Here, it seems to suffice to check whether the scope
   // specifier designates a class type.
-  if (D.getDeclSpec().isFriendSpecified() &&
+  const bool IsExtensions = LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Extensions;
+
+  if (!IsExtensions && D.getDeclSpec().isFriendSpecified() &&
       !isa_and_present<CXXRecordDecl>(
           computeDeclContext(D.getCXXScopeSpec()))) {
     Diag(ExplicitObjectParam->getBeginLoc(),
@@ -11741,7 +11743,6 @@ void Sema::CheckExplicitObjectMemberFunction(Declarator &D,
   if (IsLambda)
     return;
 
-  const bool IsExtensions = LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Extensions;
   if (!IsExtensions && (!DC || !DC->isRecord())) {
     assert(D.isInvalidType() && "Explicit object parameter in non-member "
                                 "should have been diagnosed already");

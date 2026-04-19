@@ -626,10 +626,11 @@ bool Sema::CheckQualifiedMemberReference(Expr *BaseExpr,
   CXXRecordDecl *BaseRecord =
     cast_or_null<CXXRecordDecl>(computeDeclContext(BaseType));
 
+  const bool IsUFCS = LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled;
   if (!BaseRecord) {
     // We can't check this yet because the base type is still
     // dependent.
-    assert(LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled || BaseType->isDependentType());
+    assert(IsUFCS || BaseType->isDependentType());
     return false;
   }
 
@@ -643,7 +644,7 @@ bool Sema::CheckQualifiedMemberReference(Expr *BaseExpr,
     DeclContext *DC = (*I)->getDeclContext()->getNonTransparentContext();
 
     if (!DC->isRecord()) {
-      if (isa<NamespaceDecl,TranslationUnitDecl>(DC))
+      if (IsUFCS && isa<NamespaceDecl,TranslationUnitDecl>(DC))
         return false;
 
       continue;
@@ -1006,22 +1007,28 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
       CheckQualifiedMemberReference(BaseExpr, BaseType, SS, R))
     return ExprError();
 
+  const auto Unresolved = [&]() -> bool {
+    if (LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Disabled)
+      return false;
+    if (R.getLookupName().getNameKind() != DeclarationName::Identifier)
+      return false;
+    if (R.empty())
+      return true;
+    if (!R.isSingleResult())
+      return false;
+    const auto *FD = R.getFoundDecl()->getUnderlyingDecl();
 
-  bool Unresolved = R.empty();
-  if (!Unresolved && R.isSingleResult()) {
-    NamedDecl *FoundDecl = R.getFoundDecl();
-    auto *FD = FoundDecl->getUnderlyingDecl();
+    if (const auto *This = dyn_cast_or_null<CXXThisExpr>(BaseExpr))
+      if (This->isImplicit())
+        return false;
+    if (FD->getAsFunction() != nullptr)
+      return true;
 
-    if (isa<FunctionTemplateDecl>(FD)) {
-      Unresolved = true;
-    } else if (const auto *V = dyn_cast<VarDecl>(FD)) {
-      Unresolved = !V->isStaticDataMember();
-    }
-    DeclAccessPair FoundDeclPair = R.begin().getPair();
-      // Unresolved = true;
-      Unresolved |= isa<CXXThisExpr>(BaseExpr) &&
-        !cast<CXXThisExpr>(BaseExpr)->isImplicit();
-  }
+    // Allow calling CPOs
+    if (const auto *V = dyn_cast<VarDecl>(FD))
+      return !V->isStaticDataMember();
+    return false;
+  }();
 
   // Construct an unresolved result if we in fact got an unresolved
   // result.
@@ -1029,15 +1036,10 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
     // Suppress any lookup-related diagnostics; we'll do these when we
     // pick a member.
     R.suppressDiagnostics();
-    UnresolvedMemberExpr *MemExpr
-      = UnresolvedMemberExpr::Create(Context, R.isUnresolvableResult(),
-                                     BaseExpr, BaseExprType,
-                                     IsArrow, OpLoc,
-                                     SS.getWithLocInContext(Context),
-                                     TemplateKWLoc, MemberNameInfo,
-                                     TemplateArgs, R.begin(), R.end());
-
-    return MemExpr;
+    return UnresolvedMemberExpr::Create(
+        Context, R.isUnresolvableResult(), BaseExpr, BaseExprType, IsArrow,
+        OpLoc, SS.getWithLocInContext(Context), TemplateKWLoc, MemberNameInfo,
+        TemplateArgs, R.begin(), R.end());
   }
 
   assert(R.isSingleResult());

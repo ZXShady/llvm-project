@@ -10627,6 +10627,86 @@ void Sema::AddBuiltinOperatorCandidates(OverloadedOperatorKind Op,
   }
 }
 
+// this function has no rewrite semantics, since UFCS only applies to identifiers and not operators
+static void UFCSADLOnly(
+    Sema &S,
+    DeclarationName Name,
+    SourceLocation Loc,
+    ArrayRef<Expr *> ADLArgs,
+    ArrayRef<Expr *> CallArgs,
+    TemplateArgumentListInfo *ExplicitTemplateArgs,
+    OverloadCandidateSet &CandidateSet,
+    bool PartialOverloading) {
+
+  ADLResult Fns;
+  S.ArgumentDependentLookup(Name, Loc, ADLArgs, Fns);
+
+
+  for (auto Cand = CandidateSet.begin(), CandEnd = CandidateSet.end();
+       Cand != CandEnd; ++Cand) {
+
+    if (!Cand->Function)
+      continue;
+
+    FunctionDecl *Fn = Cand->Function;
+    Fns.erase(Fn);
+
+    if (FunctionTemplateDecl *FunTmpl = Fn->getPrimaryTemplate())
+      Fns.erase(FunTmpl);
+  }
+
+  const bool IsExtensions =
+      S.getLangOpts().getUFCSMode() == LangOptions::UFCSModeKind::Extensions;
+  for (auto *D : Fns) {
+    DeclAccessPair FoundDecl = DeclAccessPair::make(D, AS_none);
+
+    if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+
+      if (ExplicitTemplateArgs)
+        continue;
+
+      if (IsExtensions) {
+        const bool hasExplicitThis =
+            FD->getNumParams() > 0 &&
+            FD->getParamDecl(0)->isExplicitObjectParameter();
+        if (!hasExplicitThis)
+          continue;
+      }
+      S.AddOverloadCandidate(
+          FD,
+          FoundDecl,
+          CallArgs,
+          CandidateSet,
+          /*SuppressUserConversions=*/false,
+          PartialOverloading,
+          /*AllowExplicit=*/true,
+          /*AllowExplicitConversion=*/false,
+          Sema::ADLCallKind::UsesADL);
+
+    } else {
+      auto *FTD = cast<FunctionTemplateDecl>(D);
+      FD = FTD->getTemplatedDecl();
+      if (IsExtensions) {
+        const bool hasExplicitThis =
+            FD->getNumParams() > 0 &&
+            FD->getParamDecl(0)->isExplicitObjectParameter();
+        if (!hasExplicitThis)
+          continue;
+      }
+      S.AddTemplateOverloadCandidate(
+          FTD,
+          FoundDecl,
+          ExplicitTemplateArgs,
+          CallArgs,
+          CandidateSet,
+          /*SuppressUserConversions=*/false,
+          PartialOverloading,
+          /*AllowExplicit=*/true,
+          Sema::ADLCallKind::UsesADL);
+    }
+  }
+}
+
 static void AddArgumentDependentLookupCandidatesUsingArgs(Sema& S,DeclarationName Name,
                                            SourceLocation Loc,
                                            ArrayRef<Expr *> ADLArgs,
@@ -16314,7 +16394,7 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
   bool HadMultipleCandidates = false;
   DeclAccessPair FoundDecl = DeclAccessPair::make(nullptr, AS_public);
   NestedNameSpecifier Qualifier = std::nullopt;
-  const bool DoADL = true; 
+  const bool IsSingleRound = getLangOpts().getUFCSStrategy() == LangOptions::UFCSStrategyKind::SingleRound;
 
   if (isa<MemberExpr>(NakedMemExpr)) {
     MemExpr = cast<MemberExpr>(NakedMemExpr);
@@ -16422,7 +16502,7 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
                              /*SuppressUserConversions=*/false);
         } else {
           AddOverloadCandidate(FuncDecl, I.getPair(), ArgsWithMember,
-                               UFCSCandidateSet,
+                               CandidateSet,
                                /*SuppressUserConversions=*/false);
         }
       } else {
@@ -16435,40 +16515,21 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
                                      /*SuppressUserConversions=*/false);
         } else {
           this->AddTemplateOverloadCandidate(FTD, I.getPair(), TemplateArgs,
-                                             ArgsWithMember, UFCSCandidateSet);
+                                             ArgsWithMember, CandidateSet);
         }
       }
     }
 
-    if (getLangOpts().getUFCSMode() != LangOptions::UFCSModeKind::Disabled &&
+    if (IsSingleRound && UnresExpr->getMemberName().isIdentifier() &&
         !UnresExpr->getQualifier() && !ArgsWithMember.empty()) {
 
-      Expr *BaseOnly[] = {ArgsWithMember[0]};
-      AddArgumentDependentLookupCandidatesUsingArgs(
-          *this, UnresExpr->getMemberName(), UnresExpr->getMemberLoc(),
-          BaseOnly, ArgsWithMember, TemplateArgs, UFCSCandidateSet, false);
-
-      if (getLangOpts().getUFCSMode() ==
-          LangOptions::UFCSModeKind::Extensions) {
-        for (auto &C : UFCSCandidateSet) {
-          // Only bother checking candidates that are currently considered
-          // "good"
-          if (!C.Viable)
-            continue;
-
-          assert(C.Function && "Candidate has no function declaration");
-
-          bool hasExplicitThis =
-              (C.Function->getNumParams() > 0 &&
-               C.Function->getParamDecl(0)->isExplicitObjectParameter());
-
-          if (!hasExplicitThis) {
-            C.Viable = false;
-
-            C.FailureKind = ovl_fail_bad_target;
-          }
-        }
-      }
+      Expr *ObjectArg[] = {ArgsWithMember[0]};
+      const auto ADLArgs =
+          getLangOpts().getUFCSLookup() == LangOptions::UFCSLookupKind::All
+              ? ArgsWithMember
+              : ArrayRef<Expr *>(ObjectArg);
+      UFCSADLOnly(*this, UnresExpr->getMemberName(), UnresExpr->getMemberLoc(),
+                  ADLArgs, ArgsWithMember, TemplateArgs, CandidateSet, false);
     }
     HadMultipleCandidates = (CandidateSet.size() > 1);
 
@@ -16478,12 +16539,31 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
 
     OverloadCandidateSet::iterator Best;
     bool Succeeded = false;
-
-    auto IsPrivate = [&](const DeclAccessPair &FoundDecl) -> bool {
-      const SFINAETrap Trap(*this,true);
+    const auto IsPrivate = [&](const DeclAccessPair &FoundDecl) -> bool {
+      const SFINAETrap Trap(*this, true);
       return CheckUnresolvedMemberAccess(UnresExpr, FoundDecl) != AR_accessible;
     };
-    auto TryUFCSFallback = [&]() -> bool {
+    const auto TryUFCSFallback = [&]() -> bool {
+      if (getLangOpts().getUFCSMode() == LangOptions::UFCSModeKind::Disabled)
+        return false;
+      if (!UnresExpr->getMemberName().isIdentifier())
+        return false;
+
+      if (UnresExpr->getQualifier())
+        return false;
+      if (ArgsWithMember.empty())
+        return false;
+
+      Expr *ObjectArg[] = {ArgsWithMember[0]};
+      const auto ADLArgs =
+          getLangOpts().getUFCSLookup() == LangOptions::UFCSLookupKind::All
+              ? ArgsWithMember
+              : ArrayRef<Expr *>(ObjectArg);
+
+      UFCSADLOnly(*this, UnresExpr->getMemberName(), UnresExpr->getMemberLoc(),
+                  ADLArgs, ArgsWithMember, TemplateArgs, UFCSCandidateSet,
+                  false);
+
       OverloadCandidateSet::iterator UFCSBest;
       if (UFCSCandidateSet.BestViableFunction(*this, UnresExpr->getBeginLoc(),
                                               UFCSBest) == OR_Success) {
@@ -16497,7 +16577,7 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
     switch (CandidateSet.BestViableFunction(*this, UnresExpr->getBeginLoc(),
                                             Best)) {
     case OR_Success:
-      if (!IsPrivate(Best->FoundDecl) || !TryUFCSFallback()) {
+      if (IsSingleRound || !IsPrivate(Best->FoundDecl) || !TryUFCSFallback()) {
         FuncDecl = cast<FunctionDecl>(Best->Function);
         FoundDecl = Best->FoundDecl;
         CheckUnresolvedMemberAccess(UnresExpr, Best->FoundDecl);
@@ -16517,11 +16597,13 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
       Succeeded = true;
       break;
     case OR_No_Viable_Function: {
-      bool AllPrivate = true;
-      for (const auto &Cand : CandidateSet) {
-        if (!IsPrivate(Cand.FoundDecl)) {
-          AllPrivate = false;
-          break;
+      bool AllPrivate = !IsSingleRound;
+      if (AllPrivate) {
+        for (const auto &Cand : CandidateSet) {
+          if (!IsPrivate(Cand.FoundDecl)) {
+            AllPrivate = false;
+            break;
+          }
         }
       }
 
@@ -16559,7 +16641,7 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
           *this, OCD_AmbiguousCandidates, ArgsWithMember);
       break;
     case OR_Deleted:
-      if (IsPrivate(Best->FoundDecl) && TryUFCSFallback()) {
+      if (!IsSingleRound && IsPrivate(Best->FoundDecl) && TryUFCSFallback()) {
             Succeeded = true;
             break;
         }

@@ -4325,6 +4325,30 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
       Opts.setUFCSMode(LangOptions::UFCSModeKind::Disabled);
     }
   }
+  if (const Arg *A = Args.getLastArg(OPT_fufcs_lookup_EQ)) {
+    if (Opts.getUFCSMode() == LangOptions::UFCSModeKind::Disabled) {
+      Diags.Report(diag::err_drv_argument_only_allowed_with)
+          << A->getSpelling() << "-fufcs=extensions or -fufcs=herb";
+    }
+    
+    if (!Opts.CPlusPlus) {
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << A->getSpelling() << "the C++ language";
+    }
+  }
+
+  if (const Arg *A = Args.getLastArg(OPT_fufcs_strategy_EQ)) {
+    if (Opts.getUFCSMode() == LangOptions::UFCSModeKind::Disabled) {
+      Diags.Report(diag::err_drv_argument_only_allowed_with)
+          << A->getSpelling() << "-fufcs=extensions or -fufcs=herb";
+    }
+
+    if (!Opts.CPlusPlus) {
+      Diags.Report(diag::err_drv_argument_not_allowed_with)
+          << A->getSpelling() << "the C++ language";
+    }
+  }
+  
   // Set the flag to prevent the implementation from emitting device exception
   // handling code for those requiring so.
   if ((Opts.OpenMPIsTargetDevice && T.isGPU()) || Opts.OpenCLCPlusPlus) {

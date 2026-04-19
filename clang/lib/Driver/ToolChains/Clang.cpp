@@ -5086,6 +5086,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Arg *A = Args.getLastArg(options::OPT_fufcs_EQ))
     A->render(Args, CmdArgs);
   
+  if (Arg *A = Args.getLastArg(options::OPT_fufcs_lookup_EQ))
+    A->render(Args, CmdArgs);
+  
+  if (Arg *A = Args.getLastArg(options::OPT_fufcs_strategy_EQ))
+    A->render(Args, CmdArgs);
+
   if (IsOpenMPDevice) {
     // We have to pass the triple of the host if compiling for an OpenMP device.
     std::string NormalizedTriple =

@@ -3743,6 +3743,18 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
   if (Old->isInvalidDecl())
     return true;
 
+  const auto hasExplicitObjParam = [](const FunctionDecl *FD) {
+    return !isa<CXXMethodDecl>(FD) && FD->getNumParams() > 0 &&
+           FD->getParamDecl(0)->isExplicitObjectParameter();
+  };
+
+  if (hasExplicitObjParam(Old) != hasExplicitObjParam(New)) {
+    // TODO: make a new err
+    Diag(New->getLocation(), diag::err_conflicting_types) << New->getDeclName();
+    Diag(Old->getLocation(), diag::note_previous_declaration);
+    return true;
+  }
+
   // Disallow redeclaration of some builtins.
   if (!getASTContext().canBuiltinBeRedeclared(Old)) {
     Diag(New->getLocation(), diag::err_builtin_redeclare) << Old->getDeclName();

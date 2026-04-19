@@ -529,6 +529,12 @@ LANGOPT(Reflection      , 1, 0, NotCompatible, "C++26 Reflection")
 
 ENUM_LANGOPT(UFCSMode, UFCSModeKind, 2, UFCSModeKind::Disabled, NotCompatible,
              "Control C++'s UFCS Behavior and syntax")
+
+ENUM_LANGOPT(UFCSLookup, UFCSLookupKind, 1, UFCSLookupKind::Object, NotCompatible,
+             "Control which arguments trigger ADL for UFCS lookup")
+
+ENUM_LANGOPT(UFCSStrategy, UFCSStrategyKind, 1, UFCSStrategyKind::TwoRound, NotCompatible,
+             "Control UFCS overload resolution set strategy")
 #undef LANGOPT
 #undef ENUM_LANGOPT
 #undef VALUE_LANGOPT

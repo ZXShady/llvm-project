@@ -1478,10 +1478,7 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
   if (!S) return false;
 
   // If we are looking for members, no need to look into global/namespace scope.
-  if(LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled) {
-    if (NameKind == LookupMemberName && R.isForRedeclaration())
-      return false;
-  } else if (NameKind == LookupMemberName) {
+  if (NameKind == LookupMemberName) {
       return false;
   }
 
@@ -2485,59 +2482,9 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
       return false;
     }
   }
-  auto ADLLookup = [this,LookupCtx,&R]()
-  {
-    auto* TD =cast<TagDecl>(LookupCtx);
-    CanQualType CanTy = this->Context.getCanonicalTagType(TD);
-    OpaqueValueExpr FakeArg[1] = {OpaqueValueExpr(TD->getLocation(), CanTy, VK_LValue)};
-    ADLResult ADL;
-    this->ArgumentDependentLookup(R.getLookupName(), R.getNameLoc(), FakeArg, ADL);
-    for (auto *Res : ADL) {
-      NamedDecl *D = R.getAcceptableDecl(Res);
-      if(!D)
-        continue;  
-      FunctionDecl *Fn;
 
-      if (auto *FTD = dyn_cast<FunctionTemplateDecl>(D))
-        Fn = FTD->getTemplatedDecl();
-      else
-        Fn = dyn_cast<FunctionDecl>(D);
-      if (Fn) {
-        // HACK: not using hasCXXExplicitObjectParameter() because I made it only work for CXXMethodDecls, so I don't have to rewrite code.
-        if (LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Extensions && (Fn->getNumParams() == 0 || !Fn->getParamDecl(0)->isExplicitObjectParameter()))
-          continue;
-
-        R.addDecl(D);
-      }
-    }
-  };
-
-  const bool Found = LookupDirect(*this, R, LookupCtx);
-  if (false && /*S &&*/ llvm::isa_and_present<TagDecl>(LookupCtx) &&
-  R.getLookupKind() == LookupMemberName &&
-  getLangOpts().getUFCSMode() != LangOptions::UFCSModeKind::Disabled) {
-        bool ADL = true;
-        if (!R.empty()) {
-          auto It = R.begin();
-          if (std::next(It) == R.end()) {
-            Decl *D = *It;
-
-            if (isa<VarDecl>(D) || isa<FieldDecl>(D)) {
-              ADL = false;
-            }
-          }
-        }
-    if(ADL) ADLLookup();
-    // if (!(R.isSingleResult() && R.getAsSingle<FieldDecl>())) {
-    // Found |= ADLLookup();
-    // || LookupName(R, S, false);
-
-    // }
-  }
-  if (Found) {
-
+  if (LookupDirect(*this, R, LookupCtx)) {
     R.resolveKind();
-        
     if (LookupRec)
       R.setNamingClass(LookupRec);
     return true;
@@ -2605,7 +2552,7 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
   Paths.setOrigin(LookupRec);
 
   if(!LookupRec->lookupInBases(BaseCallback, Paths))
-    return !R.empty();
+    return false;
   R.setNamingClass(LookupRec);
 
   // C++ [class.member.lookup]p2:

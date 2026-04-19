@@ -10052,3 +10052,22 @@ def fufcs_EQ : Joined<["-"], "fufcs=">, Group<f_Group>,
   NormalizedValuesScope<"LangOptions">, 
   NormalizedValues<["UFCSModeKind::Disabled", "UFCSModeKind::Extensions", "UFCSModeKind::Herb"]>,
   MarshallingInfoEnum<LangOpts<"UFCSMode">, "UFCSModeKind::Disabled">;
+
+def fufcs_lookup_EQ : Joined<["-"], "fufcs-lookup=">, Group<f_Group>,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"Control which arguments trigger ADL for UFCS "
+           "'object' uses only the first argument; "
+           "'all' uses all arguments in the call">,
+  Values<"object,all">,
+  NormalizedValuesScope<"LangOptions">, 
+  NormalizedValues<["UFCSLookupKind::Object", "UFCSLookupKind::All"]>,
+  MarshallingInfoEnum<LangOpts<"UFCSLookup">, "UFCSLookupKind::Object">;
+
+def fufcs_strategy_EQ : Joined<["-"], "fufcs-strategy=">, Group<f_Group>,
+  Visibility<[ClangOption, CC1Option]>,
+  HelpText<"UFCS overload resolution: 'two-round' prefers members even if match is worse; "
+           "'single-round' picks the best match from a unified set.">,
+  Values<"two-round,single-round">,
+  NormalizedValuesScope<"LangOptions">, 
+  NormalizedValues<["UFCSStrategyKind::TwoRound", "UFCSStrategyKind::SingleRound"]>,
+  MarshallingInfoEnum<LangOpts<"UFCSStrategy">, "UFCSStrategyKind::TwoRound">;

@@ -394,5 +394,11 @@ FEATURE(ufcs_all, LangOpts.getUFCSMode() != LangOptions::UFCSModeKind::Disabled)
 FEATURE(ufcs_herb, LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Herb)
 FEATURE(ufcs_extensions, LangOpts.getUFCSMode() == LangOptions::UFCSModeKind::Extensions)
 
+FEATURE(ufcs_strategy_two_round, LangOpts.getUFCSStrategy() == LangOptions::UFCSStrategyKind::TwoRound)
+FEATURE(ufcs_strategy_single_round, LangOpts.getUFCSStrategy() == LangOptions::UFCSStrategyKind::SingleRound)
+
+FEATURE(ufcs_lookup_all, LangOpts.getUFCSLookup() == LangOptions::UFCSLookupKind::All)
+FEATURE(ufcs_lookup_object, LangOpts.getUFCSLookup() == LangOptions::UFCSLookupKind::Object)
+
 #undef EXTENSION
 #undef FEATURE
